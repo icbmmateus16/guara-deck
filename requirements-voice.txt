@@ -1,0 +1,5 @@
+-r requirements.txt
+edge-tts>=7,<8
+openai-whisper>=20240930
+piper-tts>=1.2,<2
+yt-dlp>=2024.10.22

@@ -1,0 +1,280 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>Guará</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<!-- Horizontal 1024x600. O touch falha no canto superior esquerdo: ali só fica o cenário. -->
+<div id="app">
+
+  <aside id="left">
+    <section id="stage" data-act="poke">
+      <canvas id="bg"></canvas>
+      <canvas id="guara"></canvas>
+      <div id="moodtag"><i></i><span>de boa</span></div>
+      <div id="fullbtn" data-act="ambient-enter" data-icon="expand"><span>Modo Guará</span></div>
+    </section>
+
+    <div id="console">
+      <div id="mic" data-act="mic"><i id="micring"></i><span id="micicon" data-icon="mic"></span></div>
+      <div id="ctext">
+        <div id="clabel">GUARÁ</div>
+        <div id="phrase">Guará online.</div>
+        <div id="sub"></div>
+      </div>
+      <div class="ibtn subtle" id="askbtn" data-act="compose" data-icon="kbd" title="Escrever"></div>
+    </div>
+
+    <div id="feed">
+      <div class="fhead"><span>AGENTES ATIVOS</span><span id="sesscount" class="count"></span></div>
+      <div id="sessions"></div>
+      <div class="fhead act-head"><span>ATIVIDADE RECENTE</span></div>
+      <div id="activity"></div>
+    </div>
+  </aside>
+
+  <main id="main">
+
+    <!-- INÍCIO -->
+    <section class="pane on" id="p-inicio">
+      <div class="gauges">
+        <div class="gauge">
+          <div class="gtop"><span>CPU</span><em id="d-cpu"></em></div>
+          <b id="g-cpu">--</b>
+          <i class="meter"><u id="m-cpu"></u></i>
+        </div>
+        <div class="gauge">
+          <div class="gtop"><span>MEMÓRIA</span><em id="d-ram"></em></div>
+          <b id="g-ram">--</b>
+          <i class="meter"><u id="m-ram"></u></i>
+        </div>
+        <div class="gauge">
+          <div class="gtop"><span>GPU</span><em id="d-gpu"></em></div>
+          <b id="g-gpu">--</b>
+          <i class="meter"><u id="m-gpu"></u></i>
+        </div>
+        <div class="gauge">
+          <div class="gtop"><span id="g-batl">BATERIA</span><em id="d-bat"></em></div>
+          <b id="g-bat">--</b>
+          <i class="meter"><u id="m-bat"></u></i>
+        </div>
+      </div>
+
+      <div class="media-card">
+        <div class="player">
+          <div id="artbox"><img id="art" alt=""><span id="noart" data-icon="music"></span></div>
+          <div class="ptext">
+            <div id="mtitle" class="ellipsis">Nada tocando</div>
+            <div id="martist" class="ellipsis">Toque uma música ou vídeo no PC</div>
+          </div>
+          <div class="ibtn" data-act="media.prev" data-icon="prev"></div>
+          <div class="ibtn play" data-act="media.playpause" id="pp" data-icon="play"></div>
+          <div class="ibtn" data-act="media.next" data-icon="next"></div>
+        </div>
+        <div class="slrow compact">
+          <div class="ibtn ghost" data-act="vol.mute" id="mute" data-icon="vol"></div>
+          <div class="slider" id="vbar" data-slider="vol"><div class="rail"><div class="fill" id="vfill"></div><div class="knob"></div></div></div>
+          <span id="vtxt" class="num">--</span>
+        </div>
+      </div>
+
+      <div class="breakers" id="toggles">
+        <div class="brk tg" data-act="toggle" data-name="dnd" data-icon="bell"><em></em><span>Não perturbe</span></div>
+        <div class="brk tg" data-act="toggle" data-name="micmute" data-icon="micoff"><em></em><span>Mic mudo</span></div>
+        <div class="brk tg" data-act="toggle" data-name="night" data-icon="moon"><em></em><span>Luz noturna</span></div>
+        <div class="brk tg" data-act="toggle" data-name="awake" data-icon="coffee"><em></em><span>Manter ativo</span></div>
+        <div class="brk" data-act="power" data-name="lock" data-icon="lock"><span>Bloquear PC</span></div>
+        <div class="brk" data-act="power" data-name="screenshot" data-icon="camera"><span>Capturar tela</span></div>
+        <div class="brk tg" data-act="toggle" data-name="dark" data-icon="contrast"><em></em><span>Tema escuro</span></div>
+        <div class="brk warn" data-act="power" data-name="suspend" data-icon="power"><span>Suspender</span></div>
+      </div>
+
+      <div id="dock"></div>
+
+      <div class="credits" id="credits" data-act="tab" data-tab="ia"></div>
+    </section>
+
+    <!-- PROJETOS -->
+    <section class="pane" id="p-apps">
+      <header class="phead"><h2>Apps</h2><span class="meta">os da sua dock do Ubuntu, na mesma ordem</span></header>
+      <div id="appgrid"><div class="empty">Lendo os apps do PC…</div></div>
+    </section>
+
+    <section class="pane" id="p-projetos">
+      <header class="phead"><h2>Projetos</h2><span id="projsum" class="meta">pastas em ~/Área de trabalho/PROJETOS</span></header>
+      <div id="projects"><div class="empty">Lendo os repositórios…</div></div>
+    </section>
+
+    <!-- DEV -->
+    <section class="pane" id="p-dev">
+      <header class="phead"><h2>Servidores locais</h2><span class="meta">toque para abrir no navegador do PC</span></header>
+      <div id="ports"></div>
+      <header class="phead sub"><h2>Docker</h2><span id="dockersum" class="meta"></span></header>
+      <div id="docker"><div class="empty">Lendo os containers…</div></div>
+      <header class="phead sub"><h2>Ollama na GPU</h2></header>
+      <div id="ollama"></div>
+    </section>
+
+    <!-- IA -->
+    <section class="pane" id="p-ia">
+      <header class="phead"><h2>Créditos das IAs</h2><div class="ibtn ghost" data-act="quota-refresh" data-icon="restart"></div></header>
+      <div id="quota"></div>
+      <div id="q-note" class="note"></div>
+
+      <div id="mission" class="mission hidden">
+        <div class="row between">
+          <h3 id="m-title">Missão</h3>
+          <span class="tag" id="m-status">rodando</span>
+        </div>
+        <div id="m-steps"></div>
+        <div id="m-text"></div>
+        <div class="row gap">
+          <div class="btn grow hidden" data-act="mission-cancel" id="m-cancel">Parar</div>
+          <div class="btn grow hidden" data-act="mission-close" id="m-close">Fechar</div>
+        </div>
+      </div>
+
+      <header class="phead sub"><h2>Missões rápidas</h2><span class="meta">o Guará executa e responde aqui</span></header>
+      <div id="missions" class="tiles"></div>
+
+      <header class="phead sub"><h2>Voz &amp; Personalidade</h2>
+        <div class="btn small" data-act="voice-toggle" id="voicebtn" data-icon="vol"><span>Avisos falados</span></div></header>
+      <div id="voices"></div>
+    </section>
+
+    <!-- PC -->
+    <section class="pane" id="p-pc">
+      <div class="glabel">Telas</div>
+      <div class="glist">
+        <div class="gcell sl"><i class="gic blue" data-icon="monitor"></i><span class="gname">Monitor</span><div class="slider" id="pbar" data-slider="pcbright"><div class="rail"><div class="fill"></div><div class="knob"></div></div></div><b id="ptxt" class="gval">--</b></div>
+        <div class="gcell sl"><i class="gic teal" data-icon="tablet"></i><span class="gname">Tablet</span><div class="slider" id="bbar" data-slider="bright"><div class="rail"><div class="fill"></div><div class="knob"></div></div></div><b id="btxt" class="gval">100%</b></div>
+        <div class="gcell tap" data-act="sleep"><i class="gic indigo" data-icon="moon"></i><span class="gname gact">Escurecer o tablet</span><span class="gval">volta ao tocar</span></div>
+      </div>
+
+      <div class="glabel">Som</div>
+      <div class="glist">
+        <div class="gcell sl"><i class="gic pink" data-icon="vol"></i><span class="gname">Volume</span><div class="slider" id="v2bar" data-slider="vol"><div class="rail"><div class="fill"></div><div class="knob"></div></div></div><b id="v2txt" class="gval">--</b></div>
+        <div class="gcell sl"><i class="gic orange" data-icon="mic"></i><span class="gname">Microfone</span><div class="slider" id="mbar" data-slider="mic"><div class="rail"><div class="fill"></div><div class="knob"></div></div></div><b id="mtxt" class="gval">--</b></div>
+        <div id="sinks"></div>
+      </div>
+
+      <div class="glabel">Energia</div>
+      <div class="glist">
+        <div class="gcell hidden" id="batrow"><i class="gic green" data-icon="bolt"></i><span class="gname">Bateria</span><span id="batinfo" class="gval"></span></div>
+        <div class="gcell seg">
+          <div class="segment" id="profiles">
+            <div data-act="profile" data-name="power-saver">Economia</div>
+            <div data-act="profile" data-name="balanced">Equilibrado</div>
+            <div data-act="profile" data-name="performance">Desempenho</div>
+          </div>
+        </div>
+        <div class="gcell tap" data-act="bluetooth"><i class="gic blue" data-icon="bt"></i><span class="gname">Bluetooth</span><i class="switch" id="bt"></i></div>
+      </div>
+
+      <div class="glabel"><span>Sistema</span><span id="uptime"></span></div>
+      <div class="glist">
+        <div class="gcell plain"><span class="gname">Processador</span><span id="cpunow" class="gval">--</span></div>
+        <div class="gcell plain chart"><canvas id="spark" width="470" height="54"></canvas></div>
+        <div class="gcell plain"><span class="gname fix">Disco</span><i class="meter"><u id="diskb"></u></i><span id="disk" class="gval">--</span></div>
+        <div class="gcell plain"><span class="gname fix">Rede</span><span id="net" class="gval">--</span></div>
+      </div>
+    </section>
+
+    <div id="perm" class="sheet hidden">
+      <div class="row">
+        <div class="badge" data-icon="shield"></div>
+        <div class="grow minw">
+          <div class="stitle">Aprovar ação</div>
+          <div id="perm-who" class="who-wrap"></div>
+        </div>
+      </div>
+      <div id="perm-tool"></div>
+      <div id="perm-detail" class="code"></div>
+      <div class="timer"><u id="perm-time"></u></div>
+      <div class="row gap">
+        <div class="btn huge deny grow" data-act="perm-deny" data-icon="x"><span>Negar</span></div>
+        <div class="btn huge allow grow" data-act="perm-allow" data-icon="check"><span>Aprovar</span></div>
+      </div>
+      <div id="perm-queue"></div>
+    </div>
+
+    <div id="offline" class="hidden">
+      <div class="stitle">Procurando o PC…</div>
+      <div class="meta">Confira se o PC está ligado e no mesmo Wi-Fi.</div>
+    </div>
+  </main>
+
+  <nav id="rail">
+    <div id="hold">
+      <div id="clock">--:--</div>
+      <div id="date">--</div>
+      <div id="tbat" class="hidden"><i><u id="tbatfill"></u></i><span id="tbatpct"></span></div>
+    </div>
+    <div class="nav on" data-act="tab" data-tab="inicio" data-icon="home"><span>Início</span></div>
+    <div class="nav" data-act="tab" data-tab="apps" data-icon="grid"><span>Apps</span></div>
+    <div class="nav" data-act="tab" data-tab="projetos" data-icon="git"><span>Projetos</span></div>
+    <div class="nav" data-act="tab" data-tab="dev" data-icon="box"><span>Dev</span></div>
+    <div class="nav" data-act="tab" data-tab="ia" data-icon="spark"><span>IA</span></div>
+    <div class="nav" data-act="tab" data-tab="pc" data-icon="monitor"><span>PC</span></div>
+    <div id="railoff" data-act="screen-off"><i class="roff" data-icon="power"></i><span>Apagar</span></div>
+    <div id="conn"><i></i><span>offline</span></div>
+  </nav>
+
+  <!-- Modo Guará (após 2 min sem toque ou pelo botão "Modo Guará"): só o personagem, uma linha de status e,
+       quando ele fala, um balão. Um toque mostra os botões; dois toques voltam ao painel. -->
+  <div id="ambient" class="hidden">
+    <div id="amb-stage"></div>
+    <div id="amb-clock">--:--</div>
+
+    <div id="amb-say" class="hidden">
+      <div id="amb-speaker">Guará</div>
+      <div id="amb-phrase"></div>
+      <div id="amb-sub"></div>
+    </div>
+
+    <div id="amb-status"><span id="amb-dots"></span><span id="amb-line"></span></div>
+
+    <div id="amb-tray" class="hidden">
+      <div class="achip" data-amb="screen-off" data-icon="power"><span>Apagar</span></div>
+      <div id="amb-chips">
+        <div class="achip" data-amb="pet" data-icon="heart"><span>Carinho</span></div>
+        <div class="achip" data-amb="status" data-icon="bolt"><span>Como tá o PC?</span></div>
+        <div id="amb-mic" data-amb="mic">
+          <i id="amb-micring"></i>
+          <span id="amb-micicon" data-icon="mic"></span>
+        </div>
+        <div class="achip" data-amb="screen" data-icon="eye"><span>Olha a tela</span></div>
+        <div class="achip" data-amb="ask" data-icon="kbd"><span>Escrever</span></div>
+      </div>
+      <div class="achip" data-amb="exit" data-icon="grid"><span>Painel</span></div>
+    </div>
+  </div>
+
+  <!-- Folha de escrita e avisos globais: funcionam tanto no painel quanto na tela cheia -->
+  <div id="compose" class="sheet modal hidden">
+    <div class="row between">
+      <div>
+        <div class="stitle" id="compose-title">Falar com o Guará</div>
+        <div class="meta" id="compose-meta">Ele consulta o PC com a IA da vez e responde para você.</div>
+      </div>
+    </div>
+    <textarea id="ask" rows="3" placeholder="Ex.: quais projetos têm alterações sem commit?"></textarea>
+    <div class="row gap">
+      <div class="btn grow" data-act="compose-cancel">Cancelar</div>
+      <div class="btn primary grow" data-act="compose-send" data-icon="send"><span id="compose-btn">Enviar</span></div>
+    </div>
+  </div>
+
+  <div id="toast" class="hidden"></div>
+  <!-- tela "apagada": preto total + luz de fundo desligada; dois toques religam (o botão físico está ruim) -->
+  <div id="screenoff" class="hidden"><div id="so-hint">Toque duas vezes para ligar</div></div>
+
+  <div id="veil" class="hidden"></div>
+</div>
+<script src="guara.js"></script>
+<script src="app.js"></script>
+</body>
+</html>

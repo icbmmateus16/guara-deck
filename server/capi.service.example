@@ -1,0 +1,16 @@
+[Unit]
+Description=Guará — painel do tablet (servidor)
+After=graphical-session.target network-online.target
+PartOf=graphical-session.target
+
+[Service]
+ExecStart=@PYTHON@ @SERVER@
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+Environment=PYTHONUNBUFFERED=1
+Restart=always
+RestartSec=3
+# Programas abertos pelo tablet (VS Code, Chrome…) não podem morrer quando o serviço reinicia.
+KillMode=process
+
+[Install]
+WantedBy=graphical-session.target

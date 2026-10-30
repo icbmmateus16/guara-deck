@@ -1,0 +1,70 @@
+# Configuração da instalação: token, atalhos, localização e máquinas
+server/config.json
+server/capi.service
+**/capi.json
+.env
+.env.*
+!.env.example
+*.local
+*.local.*
+local.properties
+
+# Credenciais e assinaturas (inclusive a chave de debug local)
+*.keystore
+*.jks
+*.pem
+*.key
+*.p12
+*.pfx
+*credentials*.json
+*service-account*.json
+secrets/
+.ssh/
+.aws/
+.claude/
+.codex/
+.agents/
+
+# Backups, sessões, gravações, capturas e dados de execução
+backups/
+backup/
+*.bak
+*.bak-*
+*.backup
+*.log
+logs/
+recordings/
+screenshots/
+.cache/
+*.sqlite
+*.sqlite3
+*.db
+
+# Python
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+*.egg-info/
+
+# Build Android: o APK inclui o token do PC
+build/
+dist/
+.gradle/
+*.apk
+*.aab
+*.idsig
+*.dex
+*.class
+*.jar
+
+# Editor e sistema
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+*~
+*.swp
+*.swo

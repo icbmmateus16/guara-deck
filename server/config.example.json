@@ -1,0 +1,7 @@
+{
+  "port": 47801,
+  "discovery_port": 47800,
+  "assistant_name": "Guará",
+  "voice_enabled": false,
+  "engines": ["codex", "agy", "claude"]
+}

@@ -1,0 +1,2 @@
+# Painel e métricas. Voz é opcional: requirements-voice.txt.
+psutil>=5.9,<8

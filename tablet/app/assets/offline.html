@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
+<style>
+  html, body { margin: 0; height: 100%; background: #0e1020; color: #f3efe8; font: 600 18px/1.4 Roboto, sans-serif; }
+  body { display: -webkit-flex; display: flex; -webkit-flex-direction: column; flex-direction: column;
+    -webkit-align-items: center; align-items: center; -webkit-justify-content: center; justify-content: center; text-align: center; padding: 0 40px; }
+  .moon { width: 120px; height: 120px; border-radius: 50%; background: #f6e7c8; position: relative; margin-bottom: 36px; }
+  .moon:after { content: ''; position: absolute; left: 34px; top: -10px; width: 120px; height: 120px; border-radius: 50%; background: #0e1020; }
+  h1 { font-size: 26px; margin: 0 0 10px; }
+  p { color: #9aa0b5; margin: 0; }
+  .dots span { display: inline-block; width: 10px; height: 10px; margin: 24px 5px 0; border-radius: 50%; background: #ff9a3c;
+    -webkit-animation: b 1.2s infinite; animation: b 1.2s infinite; }
+  .dots span:nth-child(2) { -webkit-animation-delay: .2s; animation-delay: .2s; }
+  .dots span:nth-child(3) { -webkit-animation-delay: .4s; animation-delay: .4s; }
+  @-webkit-keyframes b { 0%, 100% { opacity: .2; } 50% { opacity: 1; } }
+  @keyframes b { 0%, 100% { opacity: .2; } 50% { opacity: 1; } }
+</style>
+</head>
+<body>
+  <div class="moon"></div>
+  <h1>Procurando o PC…</h1>
+  <p>O Guará conecta sozinho quando o PC estiver ligado e no mesmo Wi-Fi.</p>
+  <div class="dots"><span></span><span></span><span></span></div>
+</body>
+</html>
