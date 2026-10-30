@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="docs/assets/banner.svg" alt="Guará Deck — um tablet antigo, um novo lugar na mesa" width="100%">
+  <img src="docs/assets/banner.png" alt="Guará Deck — o personagem oficial em pixel art no seu tablet" width="100%">
 </p>
 <p align="center">
   <img alt="Linux e GNOME" src="https://img.shields.io/badge/PC-Linux%20%2B%20GNOME-9bb9a5?style=flat-square&labelColor=17211e">
