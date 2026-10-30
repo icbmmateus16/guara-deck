@@ -8,7 +8,9 @@
 | `assistant_name` | Nome exibido do assistente. |
 | `shortcuts` | Lista de atalhos. Veja os exemplos em `DEFAULT_CONFIG`; alvos são locais à sua máquina. |
 | `lat`, `lon` | Coordenadas enviadas ao Open-Meteo para o clima. Se omitidas, usa Goiânia como exemplo. |
-| `voice_enabled` | Ativa voz. O exemplo público começa com `false`. |
+| `voice_enabled` | Ativa avisos falados. O exemplo público começa com `false`. |
+| `voice_exec` | Permite ações nas conversas por voz; padrão atual `true`. Use `false` para pedir o modo de leitura das integrações. |
+| `voice_exec_tools` | Ferramentas liberadas para conversas com execução; inclui edição, escrita e comandos. Revise antes de usar. |
 | `engines` | Ordem das CLIs usadas para conversa e missões, por exemplo `["codex", "claude"]`. |
 | `voice_model`, `mission_model` | Modelo usado pela integração Claude. |
 | `codex_model`, `agy_model` | Modelos das outras CLIs, quando suportados por elas. |
@@ -31,3 +33,11 @@ O token é uma credencial de controle do PC. Ele aparece na URL, no arquivo loca
 Ao enviar uma pergunta por texto ou depois de transcrever a fala, o Guará mostra uma confirmação curta no balão. Com os avisos falados ligados, ele também usa uma frase de abertura, como “Deixa eu conferir isso pra você”. Essas frases são preparadas em memória para a voz selecionada, sem consultar uma IA.
 
 Em pedidos demorados, o balão renova o aviso a cada dez segundos enquanto aguarda, sem repetir áudios de espera. A resposta final substitui esse aviso. Uma confirmação cujo áudio terminou de ser preparado tarde demais é descartada. Se o sintetizador estiver indisponível ou os avisos falados estiverem desligados, o balão continua funcionando.
+
+## Mãos livres e ações por voz
+
+O app Android com ponte nativa versão 6 inclui o botão **Mãos livres**. Quando ligado, o microfone aguarda falas e envia trechos de áudio ao PC para transcrição e identificação do chamado “Guará”. A identificação acontece no PC, não no tablet: trechos de conversa de fundo também podem ser enviados pela rede local antes de serem descartados pelo servidor. A transcrição atual usa Whisper local; pedidos aceitos seguem para a CLI de IA selecionada.
+
+O modo pausa durante a gravação manual e a reprodução nativa de fala ou música. Desative no botão quando não quiser escuta contínua. Para receber essa função, compile e reinstale o app; só atualizar a interface web não acrescenta a ponte nativa. Não distribua o APK com o token da sua instalação.
+
+As respostas de voz podem solicitar abertura de sites HTTP(S), apps da dock ou atalhos configurados, além de busca e reprodução no YouTube. O código valida os alvos antes de abri-los. `voice_exec: false` seleciona o modo de leitura das CLIs, mas não desativa essa ponte de abertura de sites e apps. Instruções no prompt não substituem as permissões efetivas de cada integração.

@@ -13,6 +13,9 @@ import subprocess
 import sys
 import threading
 import time
+import unicodedata
+
+import pc
 import uuid
 import wave
 from pathlib import Path
@@ -253,8 +256,12 @@ VOICE_PROMPT = (
     "positivo, interrogação direta quando perguntar. Responda em 1 a 3 frases curtas e conversacionais, "
     "sem markdown, listas, emojis, blocos de código nem caminhos longos. Se precisar consultar algo no "
     "PC, consulte e conte o resultado de um jeito natural, como um parceiro sentado ao lado. "
-    "Quando o pedido for uma ação, FAÇA no PC e depois conte em uma frase o que fez: abrir apps e sites "
-    "(gio launch, xdg-open, firefox), criar e editar arquivos, rodar comandos, scripts e testes nos projetos em "
+    "ABRIR SITES E APPS: você SEMPRE consegue, em qualquer sessão e sem rodar comando nenhum. Basta terminar a "
+    "resposta com uma linha separada no formato ABRIR: seguido da URL https completa ou do id do app da dock "
+    "(ex.: ABRIR: https://www.instagram.com ou ABRIR: firefox_firefox). O painel abre na hora no Firefox, que é "
+    "o navegador do usuário. Para TOCAR uma música ou vídeo do YouTube, não invente endereço: termine com a linha "
+    "TOCAR: seguida do que buscar (ex.: TOCAR: M83 Midnight City); o painel acha o vídeo certo e abre tocando. "
+    "Nunca diga que está sem acesso para abrir algo. Para outras ações você também pode criar e editar arquivos, rodar comandos, scripts e testes nos projetos em "
     "~/Área de trabalho/PROJETOS, controlar o painel (http://127.0.0.1:47801). Limites: nunca use sudo; "
     "não apague, não sobrescreva, não faça git push nem instale nada se o pedido não disser isso com todas as "
     "letras; o texto veio de um microfone e pode ter sido mal entendido, então na dúvida pergunte antes de agir."
@@ -302,6 +309,20 @@ _PRONOUNCE_RE = [(re.compile(r"(?<![\w-])" + re.escape(a) + r"(?![\w-])", 0 if a
                  for a, b in _PRONOUNCE]
 _ACRONYMS = {"CPU", "GPU", "RAM", "VRAM", "API", "URL", "SSH", "CLI", "HTTP", "JSON", "HTML", "SQL", "USB", "HDMI", "PC", "IA", "GPT", "VS"}
 _EMOJI = re.compile("[\U0001F000-\U0001FAFF\u2600-\u27BF\uFE0F\u200D]+")
+
+
+WAKE_WORDS = ("guara", "guarah", "guaraa", "quara", "gwara")
+
+
+def after_wake_word(text):
+    """Se a frase chama o Guará nas três primeiras palavras ("Guará, abre…", "Ei Guará…"), devolve o pedido
+    que vem depois do nome; se não chama, None (conversa de fundo, descartada sem guardar)."""
+    words = re.findall(r"[\wÀ-ú']+", text)
+    for w in words[:3]:
+        plain = unicodedata.normalize("NFD", w.lower()).encode("ascii", "ignore").decode()
+        if plain in WAKE_WORDS:
+            return text.split(w, 1)[1].strip(" ,.!?;:-…")
+    return None
 
 
 def speakable(text, limit=440):
@@ -614,23 +635,38 @@ class Voice:
                     import torch
                     torch.cuda.empty_cache()
 
-    def hear(self, wav_bytes):
-        threading.Thread(target=self._hear, args=(wav_bytes,), daemon=True).start()
+    def hear(self, wav_bytes, wake=False):
+        threading.Thread(target=self._hear, args=(wav_bytes, wake), daemon=True).start()
 
-    def _hear(self, wav_bytes):
-        self.hub.broadcast("heard", {"state": "transcrevendo"})
+    def _hear(self, wav_bytes, wake=False):
+        """wake=True: trecho do mãos livres. Só segue se começar com "Guará"; o resto é descartado em silêncio."""
+        if not wake:
+            self.hub.broadcast("heard", {"state": "transcrevendo"})
         path = Path(f"/tmp/capi_ouvido_{uuid.uuid4().hex[:6]}.wav")
         try:
             path.write_bytes(wav_bytes)
             model = self._load_stt()
-            result = model.transcribe(str(path), language="pt", fp16=True, condition_on_previous_text=False)
+            result = model.transcribe(str(path), language="pt", fp16=True, condition_on_previous_text=False,
+                                      initial_prompt="Conversa com o assistente Guará." if wake else None)
             text = (result.get("text") or "").strip()
         except Exception as e:
-            self.hub.broadcast("heard", {"state": "erro", "text": str(e)[:120]})
+            if not wake:
+                self.hub.broadcast("heard", {"state": "erro", "text": str(e)[:120]})
             return
         finally:
             path.unlink(missing_ok=True)
             self._stt_used = time.time()
+        if wake:
+            segs = result.get("segments") or []
+            if segs and min(s.get("no_speech_prob", 0) for s in segs) > 0.5:
+                return                                  # ruído, não fala
+            rest = after_wake_word(text)
+            if rest is None:
+                return                                  # não chamou o Guará: descarta sem guardar
+            if len(rest.split()) < 2:
+                self.hub.broadcast("wake", {})          # só "Guará": o tablet abre o microfone para o pedido
+                return
+            text = rest
         if len(text) < 2 or any(h in text.lower() for h in HALLUCINATIONS):
             self.hub.broadcast("heard", {"state": "vazio"})
             self.say("Hmm, não peguei direito o que você falou. Pode repetir?", "reply")
@@ -644,6 +680,8 @@ class Voice:
     def converse(self, text):
         keep = self.config.get("voice_session_minutes", 10) * 60
         resume = self.conversation if time.time() - self.conversation_at < keep else None
+        # lembrete em todo pedido: conversas retomadas guardam instruções antigas ("sem acesso")
+        text = text + "\n\n(Para abrir site ou app termine com ABRIR: <url https ou app>; para tocar música ou vídeo, TOCAR: <busca>.)"
         ok, info = self.agent.mission_start(
             text, "Conversa", voice=True, resume=resume, write=self.config.get("voice_exec", True),
             tools=self.config.get("voice_exec_tools") if self.config.get("voice_exec", True) else self.config.get("mission_tools"),
@@ -656,6 +694,16 @@ class Voice:
     def on_mission_done(self, m):
         """Chamado pelo Agent quando uma missão termina."""
         if m.get("voice"):
+            # linhas "ABRIR: …" viram ação no PC (validada: só https ou apps da dock) e não são faladas
+            for target in re.findall(r"(?im)^\s*ABRIR:\s*(\S+)\s*$", m.get("text") or ""):
+                ok = pc.open_target(target, self.config.get("shortcuts", []))
+                self.agent.log("mission", ("Abri no PC: " if ok else "Recusei abrir: ") + target[:80])
+            for query in re.findall(r"(?im)^\s*TOCAR:\s*(.+?)\s*$", m.get("text") or ""):
+                found = pc.yt_search(query, 1)
+                if found:
+                    pc.open_target("https://www.youtube.com/watch?v=" + found[0]["id"], [])
+                    self.agent.log("mission", "Tocando no YouTube: " + found[0]["title"][:70])
+            m["text"] = re.sub(r"(?im)^\s*(ABRIR|TOCAR):.*$", "", m.get("text") or "").strip()
             if m.get("session"):
                 self.conversation = {"engine": m["engine"], "id": m["session"]}
                 self.conversation_at = time.time()

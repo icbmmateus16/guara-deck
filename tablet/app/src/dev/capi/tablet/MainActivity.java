@@ -64,6 +64,8 @@ public class MainActivity extends Activity {
     private volatile boolean running = true;
     private WifiManager.MulticastLock multicast;
     private volatile boolean listening = false;
+    private volatile boolean handsFree = false;      // mãos livres: escuta o tempo todo esperando "Guará"
+    private volatile boolean wakeRecActive = false;
     private final Object audioLock = new Object();
     private final AtomicInteger playGen = new AtomicInteger(0);
     private AudioTrack activeTrack = null;
@@ -255,7 +257,14 @@ public class MainActivity extends Activity {
         }
 
         @JavascriptInterface
-        public String version() { return "5"; }
+        public String version() { return "6"; }
+
+        @JavascriptInterface
+        public void setHandsFree(boolean on) {
+            if (on == handsFree) return;
+            handsFree = on;
+            if (on) new Thread(new WakeLoop(), "capi-wake").start();
+        }
 
         @JavascriptInterface
         public void listen() {
@@ -530,6 +539,101 @@ public class MainActivity extends Activity {
     }
 
     /**
+     * Mãos livres: escuta o tempo todo e, quando alguém fala, manda só aquele trecho para o PC conferir se
+     * começou com "Guará" (o resto é descartado lá). Pausa enquanto o Guará fala, o YouTube toca ou o
+     * microfone de toque está em uso, e guarda meio segundo antes da fala para não cortar o "Gua".
+     */
+    private class WakeLoop implements Runnable {
+        private static final int RATE = 16000;
+
+        private boolean busy() {
+            return listening || activeTrack != null || (ytTrack != null && !ytPaused);
+        }
+
+        private void nap(long ms) {
+            try { Thread.sleep(ms); } catch (InterruptedException ignored) { }
+        }
+
+        @Override
+        public void run() {
+            int min = AudioRecord.getMinBufferSize(RATE, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT);
+            short[] buf = new short[RATE / 10];                 // blocos de 100 ms
+            double noise = 300;
+            while (handsFree && running) {
+                if (busy()) { nap(250); continue; }
+                AudioRecord rec = null;
+                ByteArrayOutputStream pcm = null;
+                java.util.ArrayDeque<byte[]> pre = new java.util.ArrayDeque<byte[]>();
+                boolean spoke = false;
+                long lastVoice = 0, startedAt = 0;
+                try {
+                    rec = new AudioRecord(MediaRecorder.AudioSource.VOICE_RECOGNITION, RATE,
+                            AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT, Math.max(min, RATE) * 2);
+                    rec.startRecording();
+                    wakeRecActive = true;
+                    while (handsFree && running && !busy()) {
+                        int n = rec.read(buf, 0, buf.length);
+                        if (n <= 0) continue;
+                        byte[] chunk = new byte[n * 2];
+                        double sum = 0;
+                        for (int i = 0; i < n; i++) {
+                            sum += buf[i] * (double) buf[i];
+                            chunk[i * 2] = (byte) (buf[i] & 0xff);
+                            chunk[i * 2 + 1] = (byte) ((buf[i] >> 8) & 0xff);
+                        }
+                        double rms = Math.sqrt(sum / n);
+                        long now = System.currentTimeMillis();
+                        if (!spoke) {
+                            if (rms > Math.max(500, noise * 2.4)) {
+                                spoke = true;
+                                startedAt = lastVoice = now;
+                                pcm = new ByteArrayOutputStream();
+                                for (byte[] p : pre) pcm.write(p, 0, p.length);
+                                pcm.write(chunk, 0, chunk.length);
+                            } else {
+                                noise = noise * 0.95 + rms * 0.05;   // acompanha o ruído da sala
+                                pre.addLast(chunk);
+                                if (pre.size() > 5) pre.removeFirst();
+                            }
+                        } else {
+                            pcm.write(chunk, 0, chunk.length);
+                            if (rms > Math.max(300, noise * 1.5)) lastVoice = now;
+                            if (now - lastVoice > 900 || now - startedAt > 8000) break;
+                        }
+                    }
+                } catch (Exception e) {
+                    nap(1500);
+                } finally {
+                    if (rec != null) {
+                        try { rec.stop(); } catch (Exception ignored) { }
+                        rec.release();
+                    }
+                    wakeRecActive = false;
+                }
+                if (spoke && pcm != null && pcm.size() > RATE * 2 * 6 / 10 && !listening) send(pcm.toByteArray());
+            }
+        }
+
+        private void send(byte[] raw) {
+            try {
+                byte[] wav = new Recorder().wav(raw);
+                HttpURLConnection c = (HttpURLConnection) new URL(panelUrl().replace("/?t=", "/api/voice?wake=1&t=")).openConnection();
+                c.setDoOutput(true);
+                c.setConnectTimeout(4000);
+                c.setReadTimeout(8000);
+                c.setRequestMethod("POST");
+                c.setRequestProperty("Content-Type", "audio/wav");
+                c.setFixedLengthStreamingMode(wav.length);
+                OutputStream out = c.getOutputStream();
+                out.write(wav);
+                out.close();
+                c.getResponseCode();
+                c.disconnect();
+            } catch (Exception ignored) { }
+        }
+    }
+
+    /**
      * Grava 16 kHz mono e para sozinho depois de 2 s de silêncio. Dois limiares calibrados pelo
      * ruído da sala nos primeiros 400 ms: um mais alto para perceber que você começou a falar e
      * outro bem mais baixo para entender que continua falando (fim de frase, pausa para pensar).
@@ -539,6 +643,10 @@ public class MainActivity extends Activity {
 
         @Override
         public void run() {
+            // o microfone é um só: espera a escuta do mãos livres soltar o AudioRecord
+            for (int w = 0; wakeRecActive && w < 40; w++) {
+                try { Thread.sleep(25); } catch (InterruptedException ignored) { }
+            }
             int min = AudioRecord.getMinBufferSize(RATE, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT);
             AudioRecord rec = null;
             ByteArrayOutputStream pcm = new ByteArrayOutputStream();

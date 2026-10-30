@@ -14,7 +14,7 @@
     K: '#1c120c', R: '#cc622c', r: '#9c451e', H: '#eb8f50', M: '#241813', W: '#f3eadc',
     I: '#f3d4b8', N: '#0e0906', E: '#f3b63a', P: '#eb6b82', X: '#5a1d1d',
     S: '#3d4352', s: '#262a35', O: '#e3562e', T: '#7ee787', Q: '#efe6d8', q: '#b3aa9c',
-    A: '#7cc4ff', Z: '#c9d4ff', F: '#d6f36b', Y: '#ffd166', B: '#ff6b6b', V: '#2b2f3d'
+    A: '#7cc4ff', Z: '#c9d4ff', F: '#d6f36b', Y: '#ffd166', B: '#ff6b6b', V: '#2b2f3d', L: '#8cbf52', l: '#5a8a30', G: '#d9f0a8'
   };
 
   var EAR_L = ['...K.....', '..KRK....', '..KRK....', '..KRIK...', '.KRRIK...', '.KRRIIK..', '.KRRIIK..', '.KRRRIIK.'];
@@ -57,12 +57,13 @@
   var SIGN = ['KKKKKKKKKKKK', 'KQQQQQBBQQQK', 'KQQQQQBBQQQK', 'KQQQQQBBQQQK', 'KQQQQQQQQQQK', 'KQQQQQBBQQQK', 'KKKKKKKKKKKK'];
   var HEART = ['.PP.PP.', 'PPPPPPP', 'PPPPPPP', '.PPPPP.', '..PPP..', '...P...'];
   var ZED = ['ZZZ', '.Z.', 'ZZZ'];
+  var LOBEIRA = ['..K..', '.LLL.', 'LGLLL', 'LLLlL', '.Lll.'];   // fruta-do-lobo, a preferida do guará
 
   var canvas, ctx, bodyImg, timer = null;
   var st = {
     mood: 'idle', subagents: 0, t: 0, blinkAt: 1500, flickAt: 3000, wagUntil: 0, petUntil: 0,
     lookAt: 0, lookDir: 0, jump: 0, sparks: [], awake: true, lastFrame: 0,
-    talk: 0, listening: false, level: 0, meteor: null, meteorAt: 18000, actAt: 25000, actUntil: 0
+    fruit: null, talk: 0, listening: false, level: 0, meteor: null, meteorAt: 18000, actAt: 25000, actUntil: 0
   };
   var ambient = [
     { a: 0.3, r: 0.8, x: 5, y: 24 },
@@ -291,6 +292,7 @@
     var yawning = calm && t < st.actUntil;
     var gazing = FULL && (st.meteor || birds) && mood !== 'sleeping' && !st.listening;
     if (gazing) look = 1;
+    if (st.fruit && !st.fruit.flyAt) look = st.fruit.x + 2 < SX + 14 ? -1 : 1;
 
     var x = SX + shakeX, y = SY + bob;
 
@@ -329,6 +331,7 @@
     else if (mood === 'thinking') eyeKind = 'up';
     else if (mood === 'typing' || mood === 'reading') eyeKind = 'down';
     if (gazing && eyeKind === 'open') eyeKind = 'up';
+    if (st.fruit && st.fruit.landed && !st.fruit.flyAt && eyeKind === 'open') eyeKind = 'down';
     if (yawning) eyeKind = 'closed';
     if (blinking && (eyeKind === 'open' || eyeKind === 'up' || eyeKind === 'down')) eyeKind = 'closed';
     eyes(eyeKind, x, y, look);
@@ -337,6 +340,7 @@
     if (st.talk > 0) mouthKind = st.talk > 6 ? 'talk3' : (st.talk > 3 ? 'talk2' : 'talk1');
     else if (petted || mood === 'done') mouthKind = 'tongue';
     else if (mood === 'waiting') mouthKind = 'open';
+    else if (st.fruit && st.fruit.flyAt) mouthKind = 'open';
     else if (yawning) mouthKind = 'yawn';
     mouth(mouthKind, x, y);
 
@@ -420,6 +424,31 @@
       ctx.globalAlpha = 1;
     }
 
+    // lobeira: cai onde você tocou, quica, ele olha, abre a boca e ela voa em arco até ele
+    if (st.fruit) {
+      var fr = st.fruit, floor = GROUND - 5;
+      if (!fr.landed) {
+        fr.vy += 70 * dt; fr.y += fr.vy * dt;
+        if (fr.y >= floor) {
+          fr.y = floor;
+          if (!fr.bounced && fr.vy > 10) { fr.vy = -fr.vy * 0.35; fr.bounced = true; } else { fr.landed = true; fr.eatAt = t + 800; }
+        }
+      } else if (!fr.flyAt) {
+        if (t > fr.eatAt) { fr.flyAt = t; fr.x0 = fr.x; fr.y0 = fr.y; }
+      } else {
+        var fk = Math.min(1, (t - fr.flyAt) / 450);
+        fr.x = fr.x0 + (SX + 11 - fr.x0) * fk;
+        fr.y = fr.y0 + (SY + 15 - fr.y0) * fk - Math.sin(fk * Math.PI) * 7;
+        if (fk >= 1) {
+          st.jump = 1; st.petUntil = t + 2000; st.wagUntil = t + 2800;
+          spark(SX + 8, SY + 2, 'heart'); spark(SX + 20, SY + 1, 'heart');
+          for (var fi = 0; fi < 5; fi++) spark();
+          st.fruit = null;
+        }
+      }
+      if (st.fruit) sprite(LOBEIRA, Math.round(fr.x), Math.round(fr.y));
+    }
+
     // chuva: fraca ou forte, um pouco inclinada pelo vento, com respingos no chão
     if (drops.length) {
       var dw = Math.max(1, Math.round(U * 0.22)), dh = Math.round(U * (SKY.rain > 1 ? 1.9 : 1.3));
@@ -458,7 +487,7 @@
   function fps() {
     if (st.talk > 0 || st.listening || st.t < st.petUntil) return 16;
     if (!st.awake || st.mood === 'sleeping') return 4;
-    if (st.mood === 'done' || st.jump > 0 || st.sparks.length || st.meteor || drops.length || SKY.storm) return 14;
+    if (st.mood === 'done' || st.jump > 0 || st.sparks.length || st.meteor || st.fruit || drops.length || SKY.storm) return 14;
     if (st.mood === 'idle') return 8;
     return 10;
   }
@@ -757,6 +786,12 @@
     },
     poke: function () {
       Guara.pet();
+    },
+    drop: function (clientX, clientY) {
+      var g = toGrid(clientX, clientY);
+      if (st.fruit) return false;
+      st.fruit = { x: Math.max(2, Math.min(GW - 7, g.x - 2)), y: Math.min(g.y, GROUND - 5) - 8, vy: 0 };
+      return true;
     },
     tapSky: function (clientX, clientY) {
       var g = toGrid(clientX, clientY);

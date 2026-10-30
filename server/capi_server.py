@@ -9,6 +9,7 @@ import json
 import mimetypes
 import os
 import queue
+import re
 import secrets
 import shlex
 import socket
@@ -51,6 +52,9 @@ DEFAULT_CONFIG = {
     "voice_enabled": True,
     "voice_model": "sonnet",
     "voice_session_minutes": 10,
+    # Voz em modo execução: o Guará age no PC (abre apps, edita arquivos, roda comandos) com os limites do prompt
+    "voice_exec": True,
+    "voice_exec_tools": ["Read", "Glob", "Grep", "WebSearch", "WebFetch", "Edit", "Write", "Bash"],
     "mission_tools": [
         "Read", "Glob", "Grep", "WebSearch", "WebFetch",
         "Bash(ls:*)", "Bash(df:*)", "Bash(free:*)", "Bash(uptime:*)",
@@ -565,7 +569,7 @@ class Handler(BaseHTTPRequestHandler):
             n = int(self.headers.get("Content-Length") or 0)
             if not 1000 < n < 4_000_000:
                 return self._send(400, {"error": "áudio inválido"})
-            VOICE.hear(self.rfile.read(n))
+            VOICE.hear(self.rfile.read(n), wake="wake=1" in self.path)
             return self._send(200, {"ok": True})
         body = self._body()
         try:
@@ -741,6 +745,25 @@ def loop_weather():
         time.sleep(900)
 
 
+OPEN_BOX = Path.home() / ".cache" / "guara" / "abrir"
+
+
+def loop_open_box():
+    """Ponte estreita para a voz: a IA, dentro da sandbox, escreve aqui um site (https) ou um app da dock e o
+    painel abre na sessão do usuário. Qualquer outra coisa é ignorada; nada de comando livre."""
+    OPEN_BOX.parent.mkdir(parents=True, exist_ok=True)
+    while True:
+        try:
+            if OPEN_BOX.exists():
+                lines = OPEN_BOX.read_text(errors="ignore").splitlines()
+                OPEN_BOX.unlink()
+                for item in lines[:3]:
+                    pc.open_target(item, CFG["shortcuts"])
+        except Exception as e:
+            sys.stderr.write(f"abrir: {e}\n")
+        time.sleep(0.5)
+
+
 def broadcast_addrs():
     """Endereço de broadcast de cada rede do PC (Wi-Fi, cabo…), menos as internas."""
     out = []
@@ -780,7 +803,7 @@ def lan_ip():
 
 
 def main():
-    for fn in (loop_stats, loop_media, loop_toggles, loop_beacon, loop_weather):
+    for fn in (loop_stats, loop_media, loop_toggles, loop_beacon, loop_weather, loop_open_box):
         threading.Thread(target=fn, daemon=True).start()
     srv = ThreadingHTTPServer(("0.0.0.0", CFG["port"]), Handler)
     srv.daemon_threads = True

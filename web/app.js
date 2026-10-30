@@ -101,6 +101,12 @@
     on('activity', renderActivity);
     on('style', function () { location.reload(); });
     on('sky', function (d) { if (Guara.setSky) Guara.setSky(d); });
+    on('wake', function () {   // disse só "Guará": acende a tela e abre o microfone para o pedido
+      if (!HF.on || Voice.mic !== 'idle' || S.permShown) return;
+      ScreenOff.exit();
+      Power.wake();
+      Voice.toggleMic();
+    });
     on('reload', hardReload);
     es.onerror = function () {
       setConnected(false);
@@ -137,6 +143,7 @@
     spark: '<path d="M12 3l2.2 6.8L21 12l-6.8 2.2L12 21l-2.2-6.8L3 12l6.8-2.2z"/>',
     monitor: '<rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 21h8M12 16v5"/>',
     tablet: '<rect x="2" y="5" width="20" height="14" rx="2.5"/><path d="M18 12h.01"/>',
+    ear: '<path d="M6 9a6 6 0 0 1 12 0c0 3.5-3.5 4.5-3.5 8a3 3 0 0 1-6 0"/><path d="M9.5 9a2.5 2.5 0 0 1 5 0c0 1.5-1.5 2-1.5 3.5"/>',
     bell: '<path d="M6 16V11a6 6 0 0 1 12 0v5l2 2H4z"/><path d="M10 20a2 2 0 0 0 4 0M3 3l18 18"/>',
     micoff: '<rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5.5 11a6.5 6.5 0 0 0 11 4.6M12 17.5V21M3 3l18 18"/>',
     mic: '<rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5.5 11a6.5 6.5 0 0 0 13 0M12 17.5V21"/>',
@@ -205,6 +212,7 @@
       else if (/\bico\b/.test(c)) size = 19;
       else if (/\bachip\b/.test(c)) size = 18;
       else if (/\bgic\b/.test(c)) size = 17;
+      else if (/\batb\b/.test(c)) size = 22;
       else if (/\broff\b/.test(c)) size = 20;
       else if (id === 'fullbtn') size = 13;
       else if (id === 'micicon') size = 22;
@@ -796,6 +804,25 @@
   // Modo Guará: inspirado nos companheiros de mesa com ESP32 (Clawdmeter, desk-buddy, claude-desktop-buddy).
   // Um personagem só, no centro; o estado cabe numa linha (uma bolinha por sessão de agente); a fala vira um
   // balão de jogo; os botões só aparecem com um toque e somem sozinhos.
+  // Mãos livres: o tablet escuta o tempo todo e o PC só age quando a frase começa com "Guará"
+  var HF = {
+    on: false,
+    set: function (on, quiet) {
+      HF.on = !!on;
+      try { localStorage.setItem('guara-hf', HF.on ? '1' : '0'); } catch (e) {}
+      if (NATIVE && NATIVE.setHandsFree) NATIVE.setHandsFree(HF.on);
+      $('hfbtn').className = 'ibtn subtle' + (HF.on ? ' on' : '');
+      $('amb-hf').className = 'hfpill' + (HF.on ? ' on' : '');
+      $('amb-hf').lastChild.textContent = HF.on ? 'Ouvindo “Guará”' : 'Mãos livres';
+      if (!quiet) toast(HF.on ? 'Mãos livres: diga “Guará” e faça o pedido' : 'Mãos livres desligado');
+      Ambient.update();
+    },
+    toggle: function () {
+      if (!NATIVE || !NATIVE.setHandsFree) { toast('Atualize o app do tablet para usar o mãos livres'); return; }
+      HF.set(!HF.on);
+    }
+  };
+
   var Ambient = {
     on: false, lastBgTap: 0, trayOpen: false, trayTimer: null, hintUntil: 0,
     enter: function () {
@@ -852,7 +879,8 @@
       } else if (S.agent.mood === 'sleeping') {
         line = 'Cochilando'; quiet = true; dim = true;
       } else {
-        line = sessions.length ? 'Agentes de boa, nada pendente' : 'Tudo calmo'; quiet = true;
+        line = HF.on ? 'Diga “Guará” para falar comigo' : (sessions.length ? 'Agentes de boa, nada pendente' : 'Tudo calmo');
+        quiet = true;
       }
       $('amb-dots').innerHTML = dots;
       $('amb-line').innerHTML = line;
@@ -873,7 +901,9 @@
       if (kind === 'exit') { Ambient.exit(); return; }
       if (kind === 'screen-off') { ScreenOff.enter(); return; }
       Ambient.tray(true);
-      if (kind === 'mic') {
+      if (kind === 'handsfree') {
+        HF.toggle();
+      } else if (kind === 'mic') {
         Voice.toggleMic();
       } else if (kind === 'pet') {
         Guara.pet();
@@ -1177,6 +1207,7 @@
         Voice.bubble(PET_LINES[petCount++ % PET_LINES.length], 'Toque em Modo Guará para tela cheia', 4500, 'GUARÁ');
       }
     },
+    handsfree: function () { HF.toggle(); },
     shortcut: function (el) {
       act('/api/action', { id: el.getAttribute('data-id') }, 'Abrindo ' + el.getAttribute('data-label') + ' no PC');
     },
@@ -1481,6 +1512,7 @@
   setTimeout(function () { paintSlider('bright', 100); }, 0);
   tickClock();
   setInterval(tickClock, 10000);
+  try { if (localStorage.getItem('guara-hf') === '1' && NATIVE && NATIVE.setHandsFree) HF.set(true, true); } catch (e) {}
   if (NATIVE && NATIVE.setBrightness) NATIVE.setBrightness(1);
   var qTab = (location.search.match(/[?&]tab=([a-z]+)/) || [])[1];
   if (qTab && document.querySelector('[data-tab="' + qTab + '"]')) ACT.tab(document.querySelector('[data-tab="' + qTab + '"]'));

@@ -324,6 +324,21 @@ def shortcut_img(sc):
     return f"/api/appicon/{key}.png" if key else ""
 
 
+def open_target(item, shortcuts):
+    """Ponte segura da voz: abre um site http(s) ou um app da dock/atalho. Qualquer outra coisa é recusada."""
+    item = item.strip().strip("<>\"'`")
+    if re.fullmatch(r"https?://[^\s'\"<>`]+", item):
+        _spawn(["gio", "open", item])
+        return True
+    if item in favorite_ids():
+        return launch_app(item)[0]
+    low = item.lower()
+    sc = next((s for s in shortcuts if low in (s["id"], s["label"].lower(), s.get("target", "").lower())), None)
+    if sc and sc.get("kind") in ("app", "open"):
+        return run_shortcut(sc)[0]
+    return False
+
+
 def launch_app(app_id):
     if app_id not in favorite_ids():
         return False, "app fora da dock"

@@ -669,8 +669,8 @@ h2, h3 { margin: 0; font-family: Inter, sans-serif; font-weight: 600; letter-spa
 /* Modo Guará: um personagem, uma linha de status, um balão quando ele fala; botões só com um toque */
 #amb-stage { -webkit-transition: opacity 0.6s; transition: opacity 0.6s; }
 #ambient.dim #amb-stage { opacity: 0.5; }
-#amb-clock { position: absolute; left: 26px; top: 20px; font-size: 18px; font-weight: 600; color: rgba(245,245,247,0.5);
-  pointer-events: none; }
+#amb-clock { position: absolute; left: 26px; top: 18px; font-size: 24px; font-weight: 600; letter-spacing: -0.4px;
+  color: rgba(255,255,255,0.9); text-shadow: 0 1px 8px rgba(0,0,0,0.45); pointer-events: none; }
 
 #amb-status {
   position: absolute; left: 80px; right: 80px; bottom: 36px; text-align: center; pointer-events: none;
@@ -981,3 +981,19 @@ b, .num, .gauge b, .credit b, .win b, #clock, #amb-clock { -webkit-font-feature-
 #fullbtn { height: 40px; padding: 0 14px; border-radius: 20px; font-size: 13.5px; }
 /* o desenho em linha fica centralizado no quadradinho (a regra acima, mais forte, punha display: block) */
 #dock .app .asvg, .appt .asvg { display: -webkit-flex; display: flex; }
+
+/* mãos livres ligado: botão verde (o tablet está escutando "Guará") */
+#hfbtn.on, .achip.on { background: #30D158; color: #FFFFFF; }
+.achip.on svg { color: #FFFFFF; }
+
+/* Tela cheia: fileira de cápsulas (como antes) e o "Mãos livres" como uma pílula acima do microfone,
+   porque é um modo do microfone e não mais uma ação na fileira */
+.hfpill { position: absolute; left: 50%; bottom: 78px; height: 34px; padding: 0 14px; border-radius: 17px;
+  -webkit-transform: translateX(-50%); transform: translateX(-50%);
+  display: -webkit-flex; display: flex; -webkit-align-items: center; align-items: center;
+  background: rgba(28,28,30,0.92); box-shadow: 0 4px 14px rgba(0,0,0,0.4);
+  color: #C7C7CC; font-size: 12.5px; font-weight: 600; white-space: nowrap; }
+.hfpill svg { margin-right: 6px; color: #C7C7CC; }
+.hfpill.on { background: #30D158; color: #FFFFFF; }
+.hfpill.on svg { color: #FFFFFF; }
+.hfpill.pressed { opacity: 0.8; -webkit-transform: translateX(-50%) scale(0.96); transform: translateX(-50%) scale(0.96); }
