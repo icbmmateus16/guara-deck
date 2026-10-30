@@ -68,3 +68,9 @@ Thumbs.db
 *~
 *.swp
 *.swo
+
+# Capturas de trabalho; apenas docs/gallery/ vai para a galeria pública
+output/
+.playwright-cli/
+.playwright/
+docs/previa-guara-suave.png

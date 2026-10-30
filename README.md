@@ -7,7 +7,7 @@
   <img alt="Python e Java" src="https://img.shields.io/badge/Python%20%2B%20Java-sem%20Gradle-d6c8af?style=flat-square&labelColor=17211e">
 </p>
 <p align="center">
-  <a href="https://github.com/icbmmateus16/guara-deck/archive/refs/heads/main.zip">Baixar código (ZIP)</a> · <a href="#começar">Começar</a> · <a href="docs/instalacao.md">Instalação completa</a> · <a href="docs/configuracao.md">Configuração</a> · <a href="CONTRIBUTING.md">Contribuir</a>
+  <a href="https://github.com/icbmmateus16/guara-deck/archive/refs/heads/main.zip">Baixar código (ZIP)</a> · <a href="#começar">Começar</a> · <a href="docs/instalacao.md">Instalação completa</a> · <a href="docs/configuracao.md">Configuração</a> · <a href="docs/galeria.md">Galeria</a> · <a href="CONTRIBUTING.md">Contribuir</a>
 </p>
 
 O Guará Deck transforma um tablet Android antigo em um painel de apoio para programar: atalhos, música, informações do PC e atividade dos agentes num lugar só. Ao lado fica o Guará, um lobo-guará animado que acompanha o que está acontecendo.
@@ -26,7 +26,23 @@ Essa foi a escolha para o companheiro da mesa: trazer um pouco da fauna brasilei
 
 ## Um companheiro de mesa
 
+O Guará oficial é o **pixel art que aparece abaixo**. Ele muda de expressão, usa objetos e reage aos toques conforme o que acontece no painel.
 
+| Um carinho entre as tarefas | Digitando | Pensando |
+| :---: | :---: | :---: |
+| ![Guará oficial recebendo carinho com corações](docs/gallery/carinho.gif) | ![Guará oficial digitando no notebook](docs/gallery/digitando.gif) | ![Guará oficial pensando](docs/gallery/pensando.gif) |
+
+| No terminal | Uma mensagem para você | Trabalho concluído |
+| :---: | :---: | :---: |
+| ![Guará oficial no terminal](docs/gallery/terminal.gif) | ![Mensagem do Guará na tela](docs/gallery/mensagem.gif) | ![Guará comemorando a conclusão](docs/gallery/concluido.gif) |
+
+[**Ver a galeria completa →**](docs/galeria.md) Carinho, leitura, busca, aprovação, erro, sono, escuta, fala, subagentes e interação com o céu.
+
+![O cerrado do Guará ao amanhecer, de manhã, ao meio-dia, à tarde, no pôr do sol e à noite](docs/gallery/horarios.png)
+
+![O cenário com céu limpo, nuvens, chuva leve, chuva forte, tempestade e neblina](docs/gallery/climas.png)
+
+<sub>Capturas da interface com dados demonstrativos. Horários e climas foram definidos para mostrar as variações; os GIFs não têm áudio.</sub>
 
 | Na mesa | O que dá para fazer |
 | :--- | :--- |
