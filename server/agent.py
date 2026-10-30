@@ -426,7 +426,7 @@ class Agent:
     # ------------------------------------------------------------ missões
 
     def mission_start(self, prompt, title="Missão", tools=None, cwd=None, voice=False, resume=None,
-                      system_prompt=None, model=None, images=None):
+                      system_prompt=None, model=None, images=None, write=False):
         with self.lock:
             if self.mission and self.mission["status"] == "running":
                 return False, "Já tem uma missão rodando"
@@ -441,9 +441,12 @@ class Agent:
             "system": system_prompt or self.config.get("mission_system_prompt", ""),
             "model": model or self.config.get("mission_model"),
             "cwd": os.path.expanduser(cwd or self.config.get("mission_cwd") or "~"),
+            "write": write,   # conversa por voz em modo execução: pode editar arquivos e rodar comandos
         }
-        threading.Thread(target=self._mission_run, args=(m, spec), daemon=True).start()
         self._mission_publish()
+        if voice and self.voice:
+            self.voice.on_mission_start(m)
+        threading.Thread(target=self._mission_run, args=(m, spec), daemon=True).start()
         return True, m["id"]
 
     def mission_cancel(self):
@@ -609,7 +612,7 @@ class Agent:
             args += ["resume"]
         for img in spec["images"]:            # ex.: captura de tela da missão "Olha minha tela"
             args += ["-i", img]
-        args += ["--skip-git-repo-check", "-c", 'sandbox_mode="read-only"']
+        args += ["--skip-git-repo-check", "-c", 'sandbox_mode="workspace-write"' if spec.get("write") else 'sandbox_mode="read-only"']
         if not resume:
             args += ["-C", spec["cwd"]]
         if self.config.get("codex_model"):

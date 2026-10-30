@@ -25,3 +25,9 @@ O painel mostra nomes de projetos, atividade dos agentes, estado do desktop e in
 O Open-Meteo recebe as coordenadas configuradas. Voz neural e YouTube também usam serviços externos. O painel é local, mas essas funções não são inteiramente offline.
 
 O token é uma credencial de controle do PC. Ele aparece na URL, no arquivo local, no APK e no log inicial do servidor. Não compartilhe esses itens; se houver exposição, pare o servidor, remova o token da configuração, reinicie e recompile o app com o novo token.
+
+## Confirmação enquanto prepara a resposta
+
+Ao enviar uma pergunta por texto ou depois de transcrever a fala, o Guará mostra uma confirmação curta no balão. Com os avisos falados ligados, ele também usa uma frase de abertura, como “Deixa eu conferir isso pra você”. Essas frases são preparadas em memória para a voz selecionada, sem consultar uma IA.
+
+Em pedidos demorados, o balão renova o aviso a cada dez segundos enquanto aguarda, sem repetir áudios de espera. A resposta final substitui esse aviso. Uma confirmação cujo áudio terminou de ser preparado tarde demais é descartada. Se o sintetizador estiver indisponível ou os avisos falados estiverem desligados, o balão continua funcionando.

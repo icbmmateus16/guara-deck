@@ -229,6 +229,12 @@ VOICE_SAMPLES = {
     "edge:pt-BR-FranciscaNeural": "Oi! Agora eu falo com a voz da Francisca, suave e tranquila. Ficou boa assim?",
 }
 
+THINKING_LINES = (
+    "Deixa eu conferir isso pra você.",
+    "Já peguei seu pedido. Vou dar uma olhada.",
+    "Boa! Deixa eu pensar nisso um instante.",
+)
+
 POKE_VOICE_LINES = [
     "Opa! Tô acordado aqui no cerrado, de orelha em pé!",
     "Hehe, valeu pelo carinho! Se precisar de ajuda no código, é só falar.",
@@ -247,7 +253,11 @@ VOICE_PROMPT = (
     "positivo, interrogação direta quando perguntar. Responda em 1 a 3 frases curtas e conversacionais, "
     "sem markdown, listas, emojis, blocos de código nem caminhos longos. Se precisar consultar algo no "
     "PC, consulte e conte o resultado de um jeito natural, como um parceiro sentado ao lado. "
-    "Nunca altere, mova nem apague arquivos a menos que o pedido diga isso explicitamente."
+    "Quando o pedido for uma ação, FAÇA no PC e depois conte em uma frase o que fez: abrir apps e sites "
+    "(gio launch, xdg-open, firefox), criar e editar arquivos, rodar comandos, scripts e testes nos projetos em "
+    "~/Área de trabalho/PROJETOS, controlar o painel (http://127.0.0.1:47801). Limites: nunca use sudo; "
+    "não apague, não sobrescreva, não faça git push nem instale nada se o pedido não disser isso com todas as "
+    "letras; o texto veio de um microfone e pode ter sido mal entendido, então na dúvida pergunte antes de agir."
 )
 
 # Adaptações fonéticas só para o sintetizador soar 100% natural em termos técnicos em pt-BR.
@@ -397,6 +407,9 @@ class Voice:
         self._stt_used = 0.0
         self._tts_lock = threading.Lock()
         self._stt_lock = threading.Lock()
+        self._ack_cache = {}
+        self._ack_lock = threading.Lock()
+        self._ack_index = 0
         self.conversation = None     # {"engine", "id"}: conversa em andamento (para lembrar o contexto)
         self.conversation_at = 0.0
         threading.Thread(target=self._warm_voices, daemon=True).start()
@@ -407,6 +420,45 @@ class Voice:
     def _warm_voices(self):
         if self.voice_id.startswith("piper:"):
             self._load_tts(self.voice_id.split(":", 1)[1])
+        if self.enabled:
+            for text in THINKING_LINES:
+                self._ack_audio(text)
+
+    def _ack_audio(self, text):
+        """Frases curtas prontas em memória, separadas por voz."""
+        voice_id = self.voice_id
+        key = (voice_id, text)
+        with self._ack_lock:
+            if key not in self._ack_cache:
+                try:
+                    data = self._synth(text)
+                except Exception:
+                    return None  # o balão continua funcionando mesmo sem sintetizador disponível
+                if not data or self.voice_id != voice_id:
+                    return None
+                self._ack_cache[key] = (data, *envelope(data))
+            return self._ack_cache[key]
+
+    def on_mission_start(self, mission):
+        text = THINKING_LINES[self._ack_index % len(THINKING_LINES)]
+        self._ack_index += 1
+        self.hub.broadcast("thinking", {"id": mission["id"], "text": text})
+        if self.enabled:
+            threading.Thread(target=self._acknowledge, args=(mission, text), daemon=True).start()
+
+    def _acknowledge(self, mission, text):
+        audio = self._ack_audio(text)
+        # A síntese pode demorar: nunca anunciar espera depois que a resposta ficou pronta.
+        if (not audio or not self.enabled or self.agent.mission is not mission
+                or mission["status"] != "running"):
+            return
+        data, env, dur = audio
+        cid = uuid.uuid4().hex[:10]
+        self.clips[cid] = data
+        if len(self.clips) > 14:
+            self.clips.pop(next(iter(self.clips)))
+        self.hub.broadcast("say", {"id": cid, "text": text, "env": env, "dur": dur,
+                                   "kind": "ack", "mission_id": mission["id"]})
 
     def _load_tts(self, model=None):
         profile = VOICE_BY_ID.get(self.voice_id) or {}
@@ -432,8 +484,7 @@ class Voice:
         if vid not in VOICE_BY_ID:
             raise ValueError("voz desconhecida")
         self.voice_id = vid
-        if vid.startswith("piper:"):
-            threading.Thread(target=self._load_tts, daemon=True).start()
+        threading.Thread(target=self._warm_voices, daemon=True).start()
         name = VOICE_BY_ID[vid]["name"]
         sample = VOICE_SAMPLES.get(vid, f"Oi! Agora eu falo com a voz {name}. Me diz o que achou da entonação!")
         self.say_async(sample, "reply")
@@ -594,7 +645,8 @@ class Voice:
         keep = self.config.get("voice_session_minutes", 10) * 60
         resume = self.conversation if time.time() - self.conversation_at < keep else None
         ok, info = self.agent.mission_start(
-            text, "Conversa", tools=self.config.get("mission_tools"), voice=True, resume=resume,
+            text, "Conversa", voice=True, resume=resume, write=self.config.get("voice_exec", True),
+            tools=self.config.get("voice_exec_tools") if self.config.get("voice_exec", True) else self.config.get("mission_tools"),
             system_prompt=VOICE_PROMPT, model=self.config.get("voice_model"),
         )
         if not ok:

@@ -95,6 +95,7 @@
     on('pcctl', onPC);
     on('attention', function () { Power.wake(); });
     on('say', function (d) { Voice.play(d); });
+    on('thinking', function (d) { Voice.thinking(d.text, d.id); });
     on('heard', function (d) { Voice.heard(d); });
     on('voice', onVoice);
     on('activity', renderActivity);
@@ -245,6 +246,9 @@
     'Toque no microfone pra trocar uma ideia comigo.',
     'Vigiando o PC enquanto você programa.'
   ];
+  var FRUIT_LINES = ['Nham! Fruta-do-lobo, minha preferida!', 'Lobeira fresquinha! Valeu, parceiro!',
+    'Hmm, essa tava docinha!', 'Combustível de guará: lobeira. Bora codar!'];
+  var fruitCount = 0;
   var PET_LINES = [
     'Opa! Tô ligadão aqui no cerrado!',
     'Valeu pelo carinho! Bora mandar ver no código?',
@@ -406,7 +410,14 @@
 
   function onMission(m) {
     S.mission = m;
-    if (Ambient.on && m.status === 'running') {
+    if (Voice.waiting && (!Voice.waiting.id || Voice.waiting.id === m.id)) {
+      Voice.waiting.id = m.id;
+      if (m.status !== 'running') {
+        Voice.waiting = null;
+        Voice.bubble(m.text || (m.status === 'cancelled' ? 'Tudo bem, parei por aqui.' : 'Prontinho!'), '', 15000, 'GUARÁ');
+      }
+    }
+    if (Ambient.on && m.status === 'running' && !Voice.waiting) {
       var step = m.steps && m.steps.length ? m.steps[m.steps.length - 1] : 'Pensando com ' + (ENGINE_NAMES[m.engine] || 'a IA') + '…';
       Voice.bubble($('phrase').textContent, step, 8000, 'PENSANDO…');
     }
@@ -837,7 +848,7 @@
         line = '<b>' + esc(name + (top.project ? ' em ' + top.project : '')) + '</b><span class="gap"></span>' +
           esc(top.phrase || (MOOD_TAG[top.mood] || MOOD_TAG.idle)[0]);
       } else if (Date.now() < Ambient.hintUntil) {
-        line = 'Toque na tela para ver os botões. Dois toques voltam ao painel.'; quiet = true;
+        line = 'Toque no céu para ver os botões, no chão para dar uma lobeira. Dois toques voltam ao painel.'; quiet = true;
       } else if (S.agent.mood === 'sleeping') {
         line = 'Cochilando'; quiet = true; dim = true;
       } else {
@@ -897,6 +908,10 @@
           Voice.bubble(PET_LINES[petCount++ % PET_LINES.length], '', 5000, 'GUARÁ');
           if (petCount % 3 === 0) api('POST', '/api/guara/interact', { kind: 'poke' }, null);
         }
+      } else if (y > 440 && Guara.drop && Guara.drop(x, y)) {
+        setTimeout(function () {
+          if (!Voice.speaking && Voice.mic === 'idle') Voice.bubble(FRUIT_LINES[fruitCount++ % FRUIT_LINES.length], '', 4500, 'GUARÁ');
+        }, 1700);
       } else {
         Guara.tapSky(x, y);
         Ambient.tray(!Ambient.trayOpen);
@@ -915,7 +930,13 @@
 
   var Voice = {
     mic: 'idle', audio: null, timer: null, bubbleUntil: 0, enabled: true, speaking: false, speaker: 'GUARÁ',
-    clip: null, lastId: '', wait: null,
+    clip: null, lastId: '', wait: null, waiting: null, thinkingIndex: 0,
+    thinking: function (text, id) {
+      if (id && S.mission && S.mission.id === id && S.mission.status !== 'running') return;
+      Voice.waiting = { id: id || null, at: Date.now(), updated: Date.now() };
+      Guara.setMood('thinking', 0);
+      Voice.bubble(text || 'Deixa eu conferir isso pra você.', 'Preparando sua resposta…', 20000, 'PENSANDO…');
+    },
     holdBubble: function () { return Voice.mic !== 'idle' || Voice.speaking || Date.now() < Voice.bubbleUntil; },
     bubble: function (phrase, sub, ms, speaker) {
       Voice.speaker = speaker || 'GUARÁ';
@@ -975,6 +996,9 @@
       }, 60);
     },
     play: function (d) {
+      if (d.kind === 'ack' && (!Voice.waiting || Voice.waiting.id !== d.mission_id ||
+          (S.mission && S.mission.id === d.mission_id && S.mission.status !== 'running'))) return;
+      if (d.kind === 'reply') Voice.waiting = null;
       Power.wake();
       if (Voice.mic === 'ouvindo' || d.id === Voice.lastId) return;   // a mesma fala pode chegar duas vezes
       Voice.lastId = d.id;
@@ -997,11 +1021,22 @@
     },
     heard: function (h) {
       if (h.state === 'transcrevendo') Voice.bubble('Entendendo o que você falou…', '', 15000, 'TRANSCREVENDO…');
-      else if (h.state === 'ok') { Voice.setMic('idle'); Voice.bubble('“' + h.text + '”', 'Pensando na resposta…', 15000, 'VOCÊ DISSE'); }
+      else if (h.state === 'ok') { Voice.setMic('idle'); Voice.thinking(); }
       else if (h.state === 'vazio') Voice.setMic('idle');
       else if (h.state === 'erro') { Voice.setMic('idle'); Voice.bubble('Não consegui entender o áudio.', h.text, 5000, 'GUARÁ'); }
     }
   };
+
+  setInterval(function () {
+    var pending = Voice.waiting;
+    if (!pending || Voice.speaking || Voice.mic !== 'idle' || !S.connected) return;
+    if (Date.now() - pending.updated < 10000) return;
+    var lines = ['Tô por aqui, conferindo os detalhes.', 'Ainda tô preparando sua resposta.', 'Vou com calma pra te responder direitinho.'];
+    var text = S.agent.mood === 'searching' ? 'Buscando as informações pra te responder.' : lines[Voice.thinkingIndex++ % lines.length];
+    var steps = S.mission && S.mission.id === pending.id && S.mission.steps;
+    Voice.bubble(text, steps && steps.length ? steps[steps.length - 1] : 'Seu pedido continua em andamento.', 20000, 'PENSANDO…');
+    pending.updated = Date.now();
+  }, 1000);
 
   window.CapiVoice = {
     state: function (st) {
@@ -1209,8 +1244,13 @@
       show($('compose'), false);
       if (!text) return;
       if (S.composeConversational || Ambient.on) {
-        Voice.bubble('“' + text + '”', 'Pensando na resposta…', 15000, 'VOCÊ DISSE');
-        act('/api/converse', { text: text }, null);
+        Voice.thinking();
+        api('POST', '/api/converse', { text: text }, function (code, d) {
+          if (code !== 200) {
+            Voice.waiting = null;
+            Voice.bubble((d && (d.info || d.error)) || 'Não consegui enviar o pedido. Tenta de novo?', '', 8000, 'GUARÁ');
+          }
+        });
       } else {
         startMission({ prompt: text });
       }
