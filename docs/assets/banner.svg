@@ -7,13 +7,4 @@
 <path d="M0 382Q190 323 390 374T800 363T1280 345V440H0" fill="#1d302b"/>
 <path d="M0 414Q220 361 450 409T890 396T1280 397V440H0" fill="#13221f"/>
 <g font-family="Arial, Helvetica, sans-serif"><text x="64" y="78" fill="#b4c8bd" font-size="15" letter-spacing="5">DO CERRADO PARA A SUA MESA</text><text x="60" y="200" fill="#f5eadc" font-size="92" font-weight="700" letter-spacing="-4">Guará<tspan dx="18" fill="#f89a5c">Deck</tspan></text><text x="64" y="259" fill="#ddd5cb" font-size="26">Um tablet antigo. Um novo lugar na mesa.</text><text x="64" y="310" fill="#92a79c" font-size="17" letter-spacing="2">LINUX  /  ANDROID  /  FEITO PARA REAPROVEITAR</text></g>
-<g transform="translate(914 90)"><path d="M-14 188Q-82 122 -98 170Q-99 204 -44 221" fill="none" stroke="#dd713c" stroke-width="31" stroke-linecap="round"/><path d="M-95 167L-88 183" stroke="#f1d7ad" stroke-width="29" stroke-linecap="round"/>
-<ellipse cx="51" cy="248" rx="95" ry="15" fill="#0b1714"/>
-<path d="M20 182L13 244M77 184L85 244" stroke="#2a2525" stroke-width="22" stroke-linecap="round"/>
-<ellipse cx="49" cy="169" rx="61" ry="65" fill="#db703e"/>
-<path d="M-9 75L-10 -14L43 57M58 55L110 -14L110 83" fill="#f28a50" stroke="#c65e34" stroke-width="7"/>
-<path d="M2 50L1 14L25 54M80 54L99 14L97 54" fill="#f5d1ac"/>
-<path d="M-20 78Q-6 34 49 39Q109 35 120 81Q124 135 49 145Q-25 137 -20 78" fill="#ef874b"/>
-<rect x="-4" y="70" width="107" height="47" rx="23" fill="#1b3036"/>
-<g fill="#79d5d4"><rect x="20" y="82" width="12" height="23" rx="6"/><rect x="68" y="82" width="12" height="23" rx="6"/></g>
-<ellipse cx="49" cy="129" rx="31" ry="21" fill="#f4ddbb"/><ellipse cx="49" cy="119" rx="9" ry="6" fill="#292526"/><path d="M39 136Q49 144 59 136" fill="none" stroke="#6a3d2b" stroke-width="3" stroke-linecap="round"/></g></svg>
+</svg>

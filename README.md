@@ -16,12 +16,17 @@ Fiz para usar um **Genesis GT-7305 de 7 polegadas**, com Android 4.4 e tela de 1
 
 > **Estado do projeto:** uso pessoal, agora aberto para quem quiser experimentar. O foco atual é Linux com GNOME e o tablet acima. Outros aparelhos e ambientes ainda precisam de testes. Não há firmware para ESP32 neste repositório.
 
+## Por que um lobo-guará?
+
+Quis dar ao projeto uma identidade brasileira. O lobo-guará (*Chrysocyon brachyurus*) faz parte da nossa fauna e é um dos símbolos do Cerrado. As orelhas grandes, as pernas compridas e a pelagem avermelhada dão ao personagem uma presença própria — e fazem o cenário do cerrado ter sentido junto dele.
+
+O [ICMBio](https://www.gov.br/icmbio/pt-br/centrais-de-conteudo/publicacoes/publicacoes-diversas/fauna-e-flora/Fogo_e_Fauna_da_Canastra_Guia_de_Mamiferos_compressed.pdf) descreve a espécie como o maior canídeo sul-americano e destaca sua ligação com o Cerrado. Ele ocorre no Brasil e em outros países da América do Sul; a distribuição por áreas abertas é detalhada pelo [Instituto Pró-Carnívoros](https://procarnivoros.org.br/animais/lobo-guara/).
+
+Essa foi a escolha para o companheiro da mesa: trazer um pouco da fauna brasileira para um projeto feito aqui, com o cerrado participando da experiência ao longo do dia.
+
 ## Um companheiro de mesa
 
-<p align="center">
-  <img src="docs/previa-guara-suave.png" alt="Quatro estados do Guará: descansando, escrevendo, pedindo aprovação e tarefa concluída" width="820">
-  <br><sub>O Guará muda de expressão junto com o trabalho.</sub>
-</p>
+
 
 | Na mesa | O que dá para fazer |
 | :--- | :--- |
