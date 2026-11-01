@@ -9,6 +9,8 @@
     <uses-permission android:name="android.permission.DISABLE_KEYGUARD" />
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
+    <!-- Optional: the original Genesis tablet restricts its logo LED to root. -->
+    <uses-permission android:name="android.permission.ACCESS_SUPERUSER" />
 
     <application
         android:label="Guará"

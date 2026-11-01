@@ -1,10 +1,16 @@
 """Voz do Guará: ouvir (Whisper na GPU), falar (Neural com prosódia dinâmica + Piper offline) e conversar.
 
 O Whisper ocupa ~3 GB de VRAM, então só carrega quando você toca no microfone
-e é descarregado depois de alguns minutos sem uso.
+e é descarregado depois de um minuto sem receber áudio, ou ao abrir um jogo.
+Com o mãos livres ligado ele fica carregado (recarregar levava segundos a cada "Guará").
 """
 
 import array
+import ctypes
+import gc
+import json
+import os
+import sys
 import asyncio
 import io
 import random
@@ -16,6 +22,7 @@ import time
 import unicodedata
 
 import pc
+import whatsapp
 import uuid
 import wave
 from pathlib import Path
@@ -157,7 +164,10 @@ VOICE_BY_ID = {v["id"]: v for v in VOICES}
 DEFAULT_VOICE = "edge:guara"
 OFFLINE_FALLBACK = "pt_BR-cadu-medium"
 WHISPER_MODEL = "large-v3-turbo"
-STT_IDLE_UNLOAD = 600     # libera a GPU depois de 10 min sem ouvir nada
+STT_IDLE_UNLOAD = 60      # libera a GPU depois de 1 min sem receber áudio
+STT_IDLE_HANDSFREE = 900  # no mãos livres o "Guará" precisa de resposta rápida: só libera após 15 min de silêncio
+WAKE_STALE = 5            # trecho do mãos livres que esperou mais que isso na fila já perdeu a vez
+FOLLOWUP_WINDOW = 14      # segundos após uma pergunta do Guará em que o áudio é tratado como resposta
 ENV_FRAME = 0.06          # envelope da boca: um valor a cada 60 ms
 SAMPLE_RATE = 24000
 # Frases que o Whisper "inventa" quando o áudio é só ruído.
@@ -257,14 +267,30 @@ VOICE_PROMPT = (
     "sem markdown, listas, emojis, blocos de código nem caminhos longos. Se precisar consultar algo no "
     "PC, consulte e conte o resultado de um jeito natural, como um parceiro sentado ao lado. "
     "ABRIR SITES E APPS: você SEMPRE consegue, em qualquer sessão e sem rodar comando nenhum. Basta terminar a "
-    "resposta com uma linha separada no formato ABRIR: seguido da URL https completa ou do id do app da dock "
-    "(ex.: ABRIR: https://www.instagram.com ou ABRIR: firefox_firefox). O painel abre na hora no Firefox, que é "
-    "o navegador do usuário. Para TOCAR uma música ou vídeo do YouTube, não invente endereço: termine com a linha "
+    "resposta com uma linha separada no formato ABRIR: seguido da URL https completa ou do nome do app como aparece "
+    "na lista de apps do pedido (ex.: ABRIR: https://www.instagram.com ou ABRIR: VS Code). O painel abre na hora no Firefox, que é "
+    "o navegador do usuário. WHATSAPP: você não abre o WhatsApp no navegador; o painel tem uma sessão própria dele. "
+    "Para ler as mensagens novas de uma conversa termine com a linha WHATSAPP_LER: <nome do contato ou grupo>; "
+    "para resumir o que falaram num grupo ou conversa grande, WHATSAPP_RESUMO: <nome do grupo ou contato>; "
+    "para saber quem mandou mensagem nova, WHATSAPP_NOVAS; "
+    "para mandar mensagem, WHATSAPP_ENVIAR: <contato ou RESPONDER> | <texto exato da mensagem, escrito como o usuário mandaria> "
+    "(se o usuário disser 'responde ela/ele que...' sem repetir o nome após ler uma conversa, use RESPONDER no lugar do contato); "
+    "quando o usuário ensinar como alguém está salvo no WhatsApp (ex.: 'o nome dela está como Amor', 'minha mãe está salva como Maria'), "
+    "termine com WHATSAPP_APELIDO: <apelido> | <nome no WhatsApp>; "
+    "para ativar aviso automático quando alguém importante mandar mensagem, WHATSAPP_VIP: <contato> (ou WHATSAPP_VIP_REMOVER: <contato>). "
+    "O painel lê as mensagens em voz alta e sempre pede confirmação antes de enviar, então não peça confirmação você mesmo. "
+    "Use o nome do contato do jeito que o usuário falou (esposa, mãe, Eduardo…): o painel conhece os apelidos e procura "
+    "o contato sozinho, e se não achar ele mesmo pergunta como está salvo. Então nunca pergunte como o contato está salvo "
+    "nem peça para repetir o texto: emita o comando direto. Para TOCAR uma música ou vídeo do YouTube, não invente endereço: termine com a linha "
     "TOCAR: seguida do que buscar (ex.: TOCAR: M83 Midnight City); o painel acha o vídeo certo e abre tocando. "
     "Nunca diga que está sem acesso para abrir algo. Para outras ações você também pode criar e editar arquivos, rodar comandos, scripts e testes nos projetos em "
     "~/Área de trabalho/PROJETOS, controlar o painel (http://127.0.0.1:47801). Limites: nunca use sudo; "
     "não apague, não sobrescreva, não faça git push nem instale nada se o pedido não disser isso com todas as "
-    "letras; o texto veio de um microfone e pode ter sido mal entendido, então na dúvida pergunte antes de agir."
+    "letras; você não clica nem digita dentro de páginas do navegador, então não prometa isso. "
+    "O usuário mora em Goiânia (GO): previsão do tempo e buscas locais são de lá, a menos que ele diga outra cidade. "
+    "Se terminar a resposta com uma pergunta, o microfone do tablet abre sozinho para ele responder; "
+    "o texto veio de um microfone e pode ter sido mal entendido, então pergunte só quando faltar algo de verdade "
+    "e, se a frase parecer um pedaço de conversa com outra pessoa, responda só 'Tô por aqui.' sem perguntar nada."
 )
 
 # Adaptações fonéticas só para o sintetizador soar 100% natural em termos técnicos em pt-BR.
@@ -313,16 +339,44 @@ _EMOJI = re.compile("[\U0001F000-\U0001FAFF\u2600-\u27BF\uFE0F\u200D]+")
 
 WAKE_WORDS = ("guara", "guarah", "guaraa", "quara", "gwara")
 
+try:
+    _LIBC = ctypes.CDLL("libc.so.6")
+except OSError:
+    _LIBC = None
+
+
+def release_memory():
+    """Devolve ao sistema a memória que o Python/PyTorch já soltou. Cada áudio é tratado numa thread
+    própria e o glibc guardava os buffers em dezenas de arenas: o servidor chegou a 14 GB de RAM."""
+    if _LIBC is not None:
+        try:
+            _LIBC.malloc_trim(0)
+        except Exception:
+            pass
+
 
 def after_wake_word(text):
-    """Se a frase chama o Guará nas três primeiras palavras ("Guará, abre…", "Ei Guará…"), devolve o pedido
-    que vem depois do nome; se não chama, None (conversa de fundo, descartada sem guardar)."""
-    words = re.findall(r"[\wÀ-ú']+", text)
-    for w in words[:3]:
-        plain = unicodedata.normalize("NFD", w.lower()).encode("ascii", "ignore").decode()
-        if plain in WAKE_WORDS:
-            return text.split(w, 1)[1].strip(" ,.!?;:-…")
+    """Aceita o nome no início, opcionalmente após uma saudação curta."""
+    words = list(re.finditer(r"[\wÀ-ú']+", text))
+    normalized = [unicodedata.normalize('NFD', word.group().lower())
+                  .encode('ascii', 'ignore').decode() for word in words]
+    index = 1 if normalized and normalized[0] in ('ei', 'oi', 'ola', 'hey') else 0
+    if len(words) > index and normalized[index] in WAKE_WORDS:
+        return text[words[index].end():].strip(" ,.!?;:-…")
     return None
+
+
+def reliable_speech(result, wake=True):
+    """Descarta silêncio e os limiares de falha de decodificação do Whisper."""
+    segments = result.get('segments') or []
+    return bool(segments) and all(
+        (segment.get('no_speech_prob', 1) <= (0.5 if wake else 0.6)
+         or (not wake and segment.get('no_speech_prob', 1) <= 0.85
+             and segment.get('avg_logprob', -float('inf')) >= -1.0))
+        and segment.get('avg_logprob', -float('inf')) >= (-1.0 if wake else -1.5)
+        and segment.get('compression_ratio', float('inf')) <= 2.4
+        for segment in segments
+    )
 
 
 def speakable(text, limit=440):
@@ -427,18 +481,96 @@ class Voice:
         self._stt = None
         self._stt_used = 0.0
         self._tts_lock = threading.Lock()
-        self._stt_lock = threading.Lock()
+        self._stt_lock = threading.RLock()
+        self.game_mode = False
+        self.games = []
+        self._stt_generation = 0
+        self._capture_generation = 0
+        self.handsfree_enabled = False
+        self._manual_waiting = 0     # áudios do microfone de toque na fila: têm prioridade sobre o mãos livres
+        self._queue_lock = threading.Lock()
+        self.followup_until = 0.0    # o Guará acabou de perguntar algo: o próximo áudio é a resposta
+        self._duck_lock = threading.Lock()
+        self._ducked = None          # (volume original, volume baixado) enquanto o tablet escuta
+        self._duck_until = 0.0
+        self.stt_idle_seconds = max(10, float(config.get("voice_stt_idle_seconds", STT_IDLE_UNLOAD)))
         self._ack_cache = {}
         self._ack_lock = threading.Lock()
         self._ack_index = 0
         self.conversation = None     # {"engine", "id"}: conversa em andamento (para lembrar o contexto)
         self.conversation_at = 0.0
+        self.wa = whatsapp.WhatsApp(on_vip=self._on_vip_message, vip_getter=self._vip_targets)
+        self.wa_pending = None       # mensagem esperando o "sim" do usuário ou clique no tablet
+        self.wa_last_chat = None     # última conversa lida/interagida ("responde ela que sim")
+        self.wa_last_at = 0.0
+        self.wa_failed_lookup = None # guarda tentativa quando o nome não foi achado ("o nome dela está como Amor")
+        self.history = []            # últimas trocas (você, Guará): contexto quando a sessão expira ou a IA muda
+        self.session_path = ROOT_DIR / 'server/voice-session.local.json'
+        self._restore_conversation()
         threading.Thread(target=self._warm_voices, daemon=True).start()
         threading.Thread(target=self._unload_idle, daemon=True).start()
+
+    def snapshot(self):
+        return {"enabled": self.enabled, "game_mode": self.game_mode,
+                "games": list(self.games), **self.voices()}
+
+    def _restore_conversation(self):
+        try:
+            saved = json.loads(self.session_path.read_text())
+            cutoff = time.time() - float(self.config.get('voice_history_hours', 48)) * 3600
+            self.history = [entry for entry in saved.get('history', [])
+                            if isinstance(entry, list) and len(entry) == 3
+                            and isinstance(entry[0], (int, float)) and entry[0] >= cutoff
+                            and all(isinstance(value, str) for value in entry[1:])][-6:]
+            session = saved.get('conversation')
+            if (isinstance(session, dict) and isinstance(session.get('engine'), str)
+                    and isinstance(session.get('id'), str)):
+                self.conversation = session
+                self.conversation_at = float(saved.get('conversation_at', 0))
+        except (OSError, ValueError, TypeError, AttributeError):
+            pass
+
+    def _save_conversation(self):
+        if not hasattr(self, 'session_path'):
+            return
+        try:
+            temporary = self.session_path.with_suffix('.tmp')
+            with open(temporary, 'w', opener=lambda path, flags: os.open(path, flags, 0o600)) as out:
+                json.dump({'history': self.history, 'conversation': self.conversation,
+                           'conversation_at': self.conversation_at}, out, ensure_ascii=False)
+            temporary.replace(self.session_path)
+        except OSError:
+            pass
+
+    def set_games(self, games):
+        games = list(games)
+        blocked = bool(games)
+        changed = self.games != games
+        transition = blocked != self.game_mode
+        self.games = games
+        self.game_mode = blocked
+        if transition:
+            self._stt_generation += 1
+        if changed or transition:
+            self.hub.broadcast("voice", self.snapshot())
+        if transition and blocked:
+            # Bloqueia novos áudios antes de esperar uma transcrição já em andamento.
+            threading.Thread(target=self._unload_stt, daemon=True).start()
+
+    def _unload_stt(self):
+        with self._stt_lock:
+            self._stt = None
+            gc.collect()
+            torch = sys.modules.get("torch")
+            if torch is not None:
+                torch.cuda.empty_cache()
+        release_memory()
 
     # ------------------------------------------------------------ falar
 
     def _warm_voices(self):
+        if self.enabled:
+            self._ack_audio('Pode falar.')
         if self.voice_id.startswith("piper:"):
             self._load_tts(self.voice_id.split(":", 1)[1])
         if self.enabled:
@@ -464,13 +596,30 @@ class Voice:
         text = THINKING_LINES[self._ack_index % len(THINKING_LINES)]
         self._ack_index += 1
         self.hub.broadcast("thinking", {"id": mission["id"], "text": text})
-        if self.enabled:
+        if self.enabled and not self.game_mode:
             threading.Thread(target=self._acknowledge, args=(mission, text), daemon=True).start()
 
+    def prompt_to_listen(self):
+        if self.game_mode:
+            return
+        audio = self._ack_audio('Pode falar.') if self.enabled else None
+        if not audio:
+            self.hub.broadcast('listen_ready', {})
+            return
+        data, env, dur = audio
+        cid = uuid.uuid4().hex[:10]
+        self.clips[cid] = data
+        if len(self.clips) > 14:
+            self.clips.pop(next(iter(self.clips)))
+        self.hub.broadcast('say', {'id': cid, 'text': 'Pode falar.', 'env': env,
+                                   'dur': dur, 'kind': 'listen_prompt'})
+
     def _acknowledge(self, mission, text):
+        if self.game_mode:
+            return
         audio = self._ack_audio(text)
         # A síntese pode demorar: nunca anunciar espera depois que a resposta ficou pronta.
-        if (not audio or not self.enabled or self.agent.mission is not mission
+        if (not audio or not self.enabled or self.game_mode or self.agent.mission is not mission
                 or mission["status"] != "running"):
             return
         data, env, dur = audio
@@ -590,12 +739,19 @@ class Voice:
                 pass
         return self._synth_piper(speech, profile if profile.get("backend") == "piper" else None)
 
-    def say(self, text, kind="reply"):
-        """Sintetiza e manda o áudio para o tablet tocar (com o envelope da boca)."""
-        clean = speakable(text)
+    def say(self, text, kind="reply", limit=440, ask=False):
+        """Sintetiza e manda o áudio para o tablet tocar (com o envelope da boca).
+        ask=True: resposta de conversa que termina em pergunta; o tablet abre o microfone quando acabar."""
+        clean = speakable(text, limit)
         if not clean or (not self.enabled and kind != "reply"):
             return
+        if self.game_mode:
+            self.hub.broadcast("reply", {"text": clean, "kind": kind})
+            return
         data = self._synth(clean)
+        if self.game_mode:
+            self.hub.broadcast("reply", {"text": clean, "kind": kind})
+            return
         if not data:
             return
         cid = uuid.uuid4().hex[:10]
@@ -603,8 +759,15 @@ class Voice:
         if len(self.clips) > 14:
             self.clips.pop(next(iter(self.clips)))
         env, dur = envelope(data)
-        self.hub.broadcast("say", {"id": cid, "text": clean, "env": env, "dur": dur, "kind": kind})
+        ask = bool(ask and self.config.get("voice_followup", True) and clean.rstrip(' "\'').endswith("?"))
+        if ask:
+            self.followup_until = time.time() + dur + FOLLOWUP_WINDOW
+        self.hub.broadcast("say", {"id": cid, "text": clean, "env": env, "dur": dur, "kind": kind, "ask": ask})
         self.hub.broadcast("attention", {"reason": "say"})
+
+    def answer(self, text, limit=440):
+        """Resposta de conversa: se for uma pergunta, o microfone abre para você responder sem tocar."""
+        return self.say(text, "reply", limit, ask=True)
 
     def say_async(self, text, kind="notify"):
         threading.Thread(target=self.say, args=(text, kind), daemon=True).start()
@@ -616,50 +779,160 @@ class Voice:
 
     def warm(self):
         """Começa a carregar o Whisper enquanto você ainda está falando."""
-        threading.Thread(target=self._load_stt, daemon=True).start()
+        if not self.game_mode:
+            threading.Thread(target=self._load_stt, daemon=True).start()
+            threading.Thread(target=self.duck, daemon=True).start()
+
+    def duck(self):
+        """Abaixa o som do PC enquanto o tablet te escuta: com música alta o microfone não achava o fim da
+        sua fala e o Whisper ouvia a música junto. Volta quando o áudio chega (ou em 25 s, por segurança)."""
+        if not self.config.get("voice_duck", True):
+            return
+        with self._duck_lock:
+            self._duck_until = time.time() + 25
+            if self._ducked:
+                return
+            v = pc.volume_get()
+            level = v.get("level")
+            if level is None or v.get("muted") or level <= 20:
+                return
+            low = max(10, round(level * 0.3))
+            pc.volume_set(low)
+            self._ducked = (level, low)
+
+    def unduck(self):
+        lock = getattr(self, "_duck_lock", None)
+        if lock is None:
+            return
+        with lock:
+            ducked, self._ducked = self._ducked, None
+            if ducked and pc.volume_get().get("level") == ducked[1]:   # se você mexeu no volume, fica o seu
+                pc.volume_set(ducked[0])
 
     def _load_stt(self):
         with self._stt_lock:
+            if self.game_mode:
+                return None
             self._stt_used = time.time()
             if self._stt is None:
                 import whisper
                 self._stt = whisper.load_model(WHISPER_MODEL, device="cuda")
             return self._stt
 
+    def _unload_if_idle(self):
+        handsfree = getattr(self, 'handsfree_enabled', False)
+        idle = max(self.stt_idle_seconds, STT_IDLE_HANDSFREE) if handsfree else self.stt_idle_seconds
+        with self._stt_lock:
+            if self._stt is not None and time.time() - self._stt_used >= idle:
+                self._unload_stt()
+                return True
+        return False
+
     def _unload_idle(self):
+        ticks = 0
         while True:
-            time.sleep(30)
-            if self._stt is not None and time.time() - self._stt_used > STT_IDLE_UNLOAD:
-                with self._stt_lock:
-                    self._stt = None
-                    import torch
-                    torch.cuda.empty_cache()
+            time.sleep(5)
+            ticks += 1
+            if not self._unload_if_idle() and ticks % 12 == 0:
+                release_memory()
+            if self._ducked and time.time() > self._duck_until:
+                self.unduck()                    # você não chegou a falar: o som volta mesmo assim
 
     def hear(self, wav_bytes, wake=False):
-        threading.Thread(target=self._hear, args=(wav_bytes, wake), daemon=True).start()
-
-    def _hear(self, wav_bytes, wake=False):
-        """wake=True: trecho do mãos livres. Só segue se começar com "Guará"; o resto é descartado em silêncio."""
+        if self.game_mode or (wake and not self.handsfree_enabled):
+            return False
+        generation = self._stt_generation
+        capture_generation = self._capture_generation
         if not wake:
-            self.hub.broadcast("heard", {"state": "transcrevendo"})
+            with self._queue_lock:
+                self._manual_waiting += 1
+            threading.Thread(target=self.unduck, daemon=True).start()
+        threading.Thread(target=self._hear, args=(wav_bytes, wake, generation, capture_generation, time.time()),
+                         daemon=True).start()
+        return True
+
+    def cancel_listening(self):
+        self._capture_generation += 1
+        threading.Thread(target=self.unduck, daemon=True).start()
+
+    def set_handsfree_mode(self, enabled):
+        was = self.handsfree_enabled
+        self.handsfree_enabled = bool(enabled)
+        if not self.handsfree_enabled:
+            self.cancel_listening()
+        elif not was and not self.game_mode:
+            # carrega já: senão o primeiro "Guará" depois de ligar (ou de reiniciar o servidor) esperava ~6 s
+            threading.Thread(target=self._load_stt, daemon=True).start()
+
+    def _manual_done(self):
+        lock = getattr(self, '_queue_lock', None)
+        if lock is None:
+            return
+        with lock:
+            self._manual_waiting = max(0, self._manual_waiting - 1)
+
+    def _hear(self, wav_bytes, wake=False, generation=None, capture_generation=None, arrived=None):
+        """wake=True: trecho do mãos livres. Só segue se começar com Guará."""
+        waiting = not wake and arrived is not None     # contado em hear(): sai da fila uma vez só
+        try:
+            self._hear_audio(wav_bytes, wake, generation, capture_generation, arrived)
+        finally:
+            if waiting:
+                self._manual_done()
+            release_memory()
+
+    def _hear_audio(self, wav_bytes, wake, generation, capture_generation, arrived):
+        if generation is None:
+            generation = self._stt_generation
+        if capture_generation is None:
+            capture_generation = getattr(self, '_capture_generation', 0)
+        def cancelled():
+            return (self.game_mode or generation != self._stt_generation
+                    or capture_generation != getattr(self, '_capture_generation', 0)
+                    or (wake and not self.handsfree_enabled))
+        if cancelled():
+            return
         path = Path(f"/tmp/capi_ouvido_{uuid.uuid4().hex[:6]}.wav")
         try:
-            path.write_bytes(wav_bytes)
-            model = self._load_stt()
-            result = model.transcribe(str(path), language="pt", fp16=True, condition_on_previous_text=False,
-                                      initial_prompt="Conversa com o assistente Guará." if wake else None)
-            text = (result.get("text") or "").strip()
+            # O mesmo lock protege carga, inferência e descarte; não sobra referência
+            # local ao modelo segurando VRAM depois que o modo jogo pede a liberação.
+            with self._stt_lock:
+                if cancelled():
+                    return
+                # Ruído de fundo do mãos livres não pode atrasar quem tocou no microfone nem virar fila:
+                # trecho antigo ou com pedido de toque esperando é descartado.
+                if wake and (getattr(self, '_manual_waiting', 0) > 0
+                             or (arrived and time.time() - arrived > WAKE_STALE)):
+                    return
+                if not wake:
+                    self.hub.broadcast("heard", {"state": "transcrevendo"})
+                path.write_bytes(wav_bytes)
+                self._load_stt()
+                if cancelled():
+                    return
+                result = self._stt.transcribe(str(path), language="pt", fp16=True,
+                                             condition_on_previous_text=False)
+                text = (result.get("text") or "").strip()
+                self._stt_used = time.time()
         except Exception as e:
-            if not wake:
+            if not wake and not cancelled():
                 self.hub.broadcast("heard", {"state": "erro", "text": str(e)[:120]})
             return
         finally:
             path.unlink(missing_ok=True)
-            self._stt_used = time.time()
+        if cancelled():
+            return
+        # Resposta a uma pergunta do Guará: o microfone abriu sozinho, então vale o critério rígido do
+        # mãos livres (eco e conversa de fundo não podem virar pedido).
+        answering = not wake and time.time() < getattr(self, 'followup_until', 0)
+        if not wake:
+            self.followup_until = 0.0
+        if (not reliable_speech(result, wake=wake or answering) or len(text) < 2
+                or any(h in text.lower() for h in HALLUCINATIONS)):
+            if not wake:
+                self.hub.broadcast("heard", {"state": "vazio"})
+            return
         if wake:
-            segs = result.get("segments") or []
-            if segs and min(s.get("no_speech_prob", 0) for s in segs) > 0.5:
-                return                                  # ruído, não fala
             rest = after_wake_word(text)
             if rest is None:
                 return                                  # não chamou o Guará: descarta sem guardar
@@ -667,21 +940,77 @@ class Voice:
                 self.hub.broadcast("wake", {})          # só "Guará": o tablet abre o microfone para o pedido
                 return
             text = rest
-        if len(text) < 2 or any(h in text.lower() for h in HALLUCINATIONS):
-            self.hub.broadcast("heard", {"state": "vazio"})
-            self.say("Hmm, não peguei direito o que você falou. Pode repetir?", "reply")
+        elif after_wake_word(text) == '':
+            # Dizer apenas o nome é chamar, não é o pedido em si.
+            self.hub.broadcast('heard', {'state': 'vazio'})
+            self.hub.broadcast('wake', {})
             return
         self.hub.broadcast("heard", {"state": "ok", "text": text})
         self.agent.log("voice", f"Você: {text}")
         self.converse(text)
 
+    def transcribe_bytes(self, audio_bytes):
+        """Transcreve um áudio recebido no WhatsApp usando o mesmo modelo Whisper na GPU."""
+        if not audio_bytes or self.game_mode:
+            return ""
+        generation = self._stt_generation
+        path = Path(f"/tmp/capi_wa_audio_{uuid.uuid4().hex[:8]}.ogg")
+        try:
+            with self._stt_lock:
+                if self.game_mode or generation != self._stt_generation:
+                    return ""
+                path.write_bytes(audio_bytes)
+                self._load_stt()
+                if self.game_mode or generation != self._stt_generation or self._stt is None:
+                    return ""
+                result = self._stt.transcribe(str(path), language="pt", fp16=True, condition_on_previous_text=False)
+                self._stt_used = time.time()
+                return (result.get("text") or "").strip()
+        except Exception:
+            return ""
+        finally:
+            path.unlink(missing_ok=True)
+            release_memory()
+
     # ------------------------------------------------------------ conversar
 
     def converse(self, text):
-        keep = self.config.get("voice_session_minutes", 10) * 60
+        if self.wa_pending:
+            handled = self._wa_answer(text)
+            if handled:
+                return True, "ok"
+            text = "(A mensagem do WhatsApp NÃO foi enviada.) " + text
+        # Atalho direto se o usuário ensinar um apelido logo após uma busca que falhou ("o nome dela está como Amor")
+        learned = self._try_direct_alias_learn(text)
+        if learned:
+            return True, "ok"
+        keep = self.config.get("voice_session_minutes", 30) * 60
         resume = self.conversation if time.time() - self.conversation_at < keep else None
+        engines = self.agent.engines()
+        if resume and engines and resume["engine"] != engines[0]:
+            resume = None                               # a IA da conversa ficou sem limite: outra assume
+        self._asked = text
+        if not resume:
+            # sessão nova (expirou ou trocou de IA): leva as últimas trocas para não perder o fio
+            recent = [h for h in self.history
+                      if time.time() - h[0] < float(self.config.get('voice_history_hours', 48)) * 3600][-6:]
+            if recent:
+                past = "\n".join(f"Usuário: {u}\nGuará: {r}" for _, u, r in recent)
+                text = f"(Conversa recente, para contexto:\n{past})\n\nPedido agora: {text}"
+        last_wa = f" Última conversa do WhatsApp: {self.wa_last_chat}." if self.wa_last_chat and time.time() - self.wa_last_at < 3600 else ""
+        failed_wa = (f" Último apelido procurado e não achado: {self.wa_failed_lookup['alias']}."
+                     if self.wa_failed_lookup and time.time() - self.wa_failed_lookup["at"] < 600 else "")
+        aliases = "; ".join(f"{k} = {v}" for k, v in list((self.config.get("whatsapp_aliases") or {}).items())[:25])
+        alias_hint = f" Apelidos já conhecidos: {aliases}." if aliases else ""
+        apps = self._app_names()
         # lembrete em todo pedido: conversas retomadas guardam instruções antigas ("sem acesso")
-        text = text + "\n\n(Para abrir site ou app termine com ABRIR: <url https ou app>; para tocar música ou vídeo, TOCAR: <busca>.)"
+        text = text + (
+            f"\n\n(Para abrir site ou app termine com ABRIR: <url https ou nome do app>; para tocar música ou vídeo, TOCAR: <busca>; "
+            + (f"apps do PC: {apps}; " if apps else "")
+            + f"WhatsApp: WHATSAPP_LER: <contato>, WHATSAPP_RESUMO: <grupo ou contato>, WHATSAPP_NOVAS, "
+            f"WHATSAPP_ENVIAR: <contato ou RESPONDER> | <texto>, WHATSAPP_APELIDO: <apelido> | <nome no WhatsApp>, "
+            f"WHATSAPP_VIP: <contato> ou WHATSAPP_VIP_REMOVER: <contato>.{alias_hint}{last_wa}{failed_wa})"
+        )
         ok, info = self.agent.mission_start(
             text, "Conversa", voice=True, resume=resume, write=self.config.get("voice_exec", True),
             tools=self.config.get("voice_exec_tools") if self.config.get("voice_exec", True) else self.config.get("mission_tools"),
@@ -690,6 +1019,18 @@ class Voice:
         if not ok:
             self.say(f"Calma aí, {info.lower()}.", "reply")
         return ok, info
+
+    def _app_names(self):
+        """Nomes dos apps que o ABRIR aceita (fixados, mais usados e atalhos), guardados por 5 min."""
+        cached = getattr(self, "_apps_cache", None)
+        if cached and time.time() - cached[0] < 300:
+            return cached[1]
+        try:
+            names = ", ".join(a["label"] for a in pc.apps_catalog(self.config.get("shortcuts", [])) if a.get("label"))
+        except Exception:
+            names = ""
+        self._apps_cache = (time.time(), names)
+        return names
 
     def on_mission_done(self, m):
         """Chamado pelo Agent quando uma missão termina."""
@@ -703,19 +1044,253 @@ class Voice:
                 if found:
                     pc.open_target("https://www.youtube.com/watch?v=" + found[0]["id"], [])
                     self.agent.log("mission", "Tocando no YouTube: " + found[0]["title"][:70])
-            m["text"] = re.sub(r"(?im)^\s*(ABRIR|TOCAR):.*$", "", m.get("text") or "").strip()
+            wa = re.findall(
+                r"(?im)^\s*(WHATSAPP_LER|WHATSAPP_RESUMO|WHATSAPP_NOVAS|WHATSAPP_ENVIAR|WHATSAPP_APELIDO|WHATSAPP_VIP|WHATSAPP_VIP_REMOVER)\b:?\s*(.*?)\s*$",
+                m.get("text") or "",
+            )
+            m["text"] = re.sub(r"(?im)^\s*(ABRIR|TOCAR|WHATSAPP_\w+)\b.*$", "", m.get("text") or "").strip()
             if m.get("session"):
                 self.conversation = {"engine": m["engine"], "id": m["session"]}
                 self.conversation_at = time.time()
-            self.say(m["text"] or "Prontinho, tudo resolvido!", "reply")
+            if m["status"] == "done" and getattr(self, "_asked", None):
+                self.history = (self.history + [(time.time(), self._asked[:300], speakable(m["text"], 300))])[-6:]
+                self._save_conversation()
+            if wa:
+                self._wa_action(m["text"], *wa[0])
+            else:
+                self.answer(m["text"] or "Prontinho, tudo resolvido!")
         elif m["status"] == "done":
             self.say_async(f"Olha só, terminei a missão {m['title']}! {m['text']}", "notify")
+
+    # ------------------------------------------------------------ WhatsApp
+
+    def _save_config_key(self, key, value):
+        cfg_path = ROOT_DIR / "server" / "config.json"
+        try:
+            user = json.loads(cfg_path.read_text()) if cfg_path.exists() else {}
+            user[key] = value
+            cfg_path.write_text(json.dumps(user, indent=2, ensure_ascii=False))
+        except Exception:
+            pass
+        self.config[key] = value
+
+    def _resolve_alias(self, name):
+        raw = (name or "").strip()
+        plain = whatsapp._plain(raw)
+        for prefix in ("a minha ", "o meu ", "minha ", "meu ", "a ", "o ", "pro ", "pra ", "para ", "do ", "da "):
+            if plain.startswith(prefix):
+                plain = plain[len(prefix):].strip()
+                break
+        aliases = {whatsapp._plain(k): v for k, v in (self.config.get("whatsapp_aliases") or {}).items()}
+        return aliases.get(plain, raw), plain
+
+    def _vip_targets(self):
+        """(nomes, palavras-chave) dos contatos que avisam sozinhos quando mandam mensagem."""
+        names = []
+        for v in self.config.get("whatsapp_vip") or []:
+            resolved, _ = self._resolve_alias(v)
+            if resolved:
+                names.append(resolved)
+        return names, list(self.config.get("whatsapp_vip_keywords") or [])
+
+    def _on_vip_message(self, title, count):
+        if not self.enabled or self.game_mode or self.wa_pending:
+            return
+        clean = re.sub(r"[^\w\sÀ-ÿ-]", "", title).strip() or title
+        self.agent.log("mission", f"WhatsApp VIP: {title} ({count})")
+        self.say(f"Olha só, chegou mensagem de {clean} no WhatsApp!", "notify")
+
+    def _set_wa_pending(self, pending):
+        self.wa_pending = pending
+        self.hub.broadcast("wa_confirm", pending)
+        if pending:
+            self.hub.broadcast("attention", {"reason": "wa_confirm"})
+
+    def _try_direct_alias_learn(self, text):
+        """Detecta frases diretas como 'o nome dela está como Amor' ou 'salva o apelido mãe como Maria'."""
+        m = re.search(
+            r"(?i)\b(?:apelido\s+de\s+|chamo\s+(?:de\s+)?|salva\s+como\s+|nome\s+(?:dela|dele|d[oa]\s+[\wÀ-ÿ]+)\s+(?:tá|ta|está|esta|é|e)\s+(?:salvo\s+)?como\s+)"
+            r"([A-Za-zÀ-ÿ0-9_ -]{2,35})$",
+            text.strip().rstrip(".!"),
+        )
+        if not m:
+            return False
+        real_name = m.group(1).strip().strip("'\"")
+        subj = re.search(r"(?i)\bnome\s+d[oa]\s+([\wÀ-ÿ]+)\s+(?:tá|ta|está|esta|é|e)", text)
+        alias_key = subj.group(1) if subj else (self.wa_failed_lookup["alias"] if self.wa_failed_lookup else None)
+        if not alias_key:
+            return False
+        threading.Thread(target=self._wa_action, args=("", "WHATSAPP_APELIDO", f"{alias_key} | {real_name}"), daemon=True).start()
+        return True
+
+    @staticmethod
+    def _format_wa_msg(who, text, mine, chat_title):
+        sender = "Você" if mine else (who or chat_title)
+        if text.startswith("[áudio: ") and text.endswith("]"):
+            transcript = text[len("[áudio: "):-1].strip()
+            return f"{sender} mandou um áudio: '{transcript}'"
+        if text == "[áudio]":
+            return f"{sender} mandou um áudio."
+        return f"{sender}: {text}"
+
+    @staticmethod
+    def _join_names(items):
+        names = [f"{name} ({n})" if n > 1 else name for name, n in items]
+        if not names:
+            return ""
+        if len(names) == 1:
+            return names[0]
+        return ", ".join(names[:-1]) + " e " + names[-1]
+
+    def _wa_action(self, said, action, arg):
+        """Executa o pedido do modelo. O conteúdo das mensagens só é falado (ou resumido por IA isolada sem
+        ferramentas), nunca volta para a IA que tem acesso ao PC."""
+        try:
+            if action == "WHATSAPP_NOVAS":
+                cat = self.wa.unread_categorized()
+                people = cat["people"][:6]
+                groups = cat["groups"][:5]
+                if not people and not groups:
+                    return self.answer("Nenhuma mensagem nova no WhatsApp.")
+                parts = []
+                if people:
+                    parts.append("Tem mensagem de " + self._join_names(people) + ".")
+                if groups:
+                    prefix = "E nos grupos: " if people else "De pessoas não tem nada novo; nos grupos tem mensagem em "
+                    parts.append(prefix + self._join_names(groups) + ".")
+                return self.answer(" ".join(parts), limit=750)
+
+            if action == "WHATSAPP_APELIDO":
+                alias_raw, sep, real_raw = arg.partition("|")
+                if not sep:
+                    real_raw = alias_raw.strip()
+                    alias_raw = (self.wa_failed_lookup or {}).get("alias") or ""
+                _, alias_key = self._resolve_alias(alias_raw)
+                real_name = real_raw.strip().strip("'\"")
+                if not alias_key or not real_name:
+                    return self.answer("Me diz qual apelido e como o nome está salvo no WhatsApp.")
+                aliases = dict(self.config.get("whatsapp_aliases") or {})
+                aliases[alias_key] = real_name
+                self._save_config_key("whatsapp_aliases", aliases)
+                self.agent.log("mission", f"Apelido WhatsApp salvo: {alias_key} → {real_name}")
+                prev = self.wa_failed_lookup
+                self.wa_failed_lookup = None
+                if prev and time.time() - prev["at"] < 600 and prev.get("action") in ("WHATSAPP_LER", "WHATSAPP_RESUMO", "WHATSAPP_ENVIAR"):
+                    prev_arg = f"{real_name} | {prev['body']}" if prev.get("body") else real_name
+                    self.answer(f"Boa, anotei que {alias_key} é {real_name}! Deixa eu abrir aqui.")
+                    return self._wa_action("", prev["action"], prev_arg)
+                return self.answer(f"Prontinho! Guardei que {alias_key} está salvo como {real_name} no WhatsApp.")
+
+            if action in ("WHATSAPP_VIP", "WHATSAPP_VIP_REMOVER"):
+                target_raw = arg.strip()
+                resolved, _ = self._resolve_alias(target_raw)
+                vips = list(self.config.get("whatsapp_vip") or [])
+                if action == "WHATSAPP_VIP":
+                    if resolved and resolved not in vips:
+                        vips.append(resolved)
+                        self._save_config_key("whatsapp_vip", vips)
+                    return self.answer(f"Combinado! Vou te avisar sempre que chegar mensagem de {resolved}.")
+                else:
+                    vips = [v for v in vips if whatsapp._key(v) != whatsapp._key(resolved) and whatsapp._key(v) != whatsapp._key(target_raw)]
+                    self._save_config_key("whatsapp_vip", vips)
+                    return self.answer(f"Beleza, desativei o aviso automático para {resolved}.")
+
+            name, _, body = arg.partition("|")
+            name = name.strip()
+            plain_name = whatsapp._plain(name)
+            pronouns = {"", "responder", "ela", "ele", "la", "lá", "essa", "esse", "mesma", "mesmo", "ultima", "ultimo", "conversa", "grupo", "pessoa", "contato"}
+            if plain_name in pronouns and self.wa_last_chat:
+                title = self.wa_last_chat
+            else:
+                resolved_name, alias_key = self._resolve_alias(name)
+                title = self.wa.find(resolved_name)
+                if not title:
+                    self.wa_failed_lookup = {"alias": alias_key or name, "action": action, "body": body.strip(), "at": time.time()}
+                    return self.answer(f"Não achei ninguém chamado {resolved_name.strip()} no WhatsApp. Como está salvo o nome nos contatos?")
+
+            self.wa_last_chat = title
+            self.wa_last_at = time.time()
+
+            if action == "WHATSAPP_LER":
+                msgs, already_seen = self.wa.read_new(title, n=6, only_new=True, transcribe=self.transcribe_bytes)
+                if not msgs:
+                    return self.answer(f"Não consegui ler a conversa com {title}.")
+                lines = [self._format_wa_msg(who, text, mine, title) for who, text, mine in msgs]
+                if already_seen:
+                    return self.answer(f"Não chegou nada novo de {title}. A última foi. {lines[-1]}", limit=900)
+                header = f"Mensagem nova de {title}. " if len(lines) == 1 else f"{len(lines)} mensagens de {title}. "
+                return self.answer(header + " ".join(lines), limit=950)
+
+            if action == "WHATSAPP_RESUMO":
+                msgs, _ = self.wa.read_new(title, n=25, only_new=False, transcribe=self.transcribe_bytes)
+                if not msgs:
+                    return self.answer(f"Não consegui ler as mensagens de {title} para resumir.")
+                lines = [self._format_wa_msg(who, text, mine, title) for who, text, mine in msgs]
+                transcript_block = "\n".join(lines[-25:])
+                summary = self.agent.summarize_safe(f"Conversa/Grupo: {title}\nMensagens recentes:\n{transcript_block}")
+                if not summary:
+                    return self.answer(f"Últimas em {title}. " + " ".join(lines[-4:]), limit=900)
+                return self.answer(summary, limit=900)
+
+            body = " ".join(body.split())[:600]
+            if not body:
+                return self.answer(f"O que você quer mandar para {title}?")
+            self._set_wa_pending({"title": title, "text": body, "at": time.time()})
+            self.answer(f"Vou mandar para {title}: {body}. Posso mandar?", limit=900)
+        except whatsapp.NotLinked:
+            self.answer("O WhatsApp do Guará não tá conectado. Roda o login dele no PC primeiro.")
+        except Exception as e:
+            self.agent.log("error", f"WhatsApp: {e}"[:160])
+            self.answer("Deu algum problema no WhatsApp, não consegui agora.")
+
+    def wa_decide(self, approve, custom_text=None):
+        """Confirma ou cancela o envio pendente (chamado pelos botões Enviar/Cancelar do tablet ou pela voz)."""
+        p = self.wa_pending
+        if not p:
+            return False
+        self._set_wa_pending(None)
+        if not approve:
+            self.say_async("Beleza, não mandei.", "reply")
+            return True
+        msg_text = (custom_text or p["text"]).strip()[:600]
+
+        def send():
+            try:
+                self.wa.send(p["title"], msg_text)
+                self.agent.log("mission", f"WhatsApp enviado para {p['title']}")
+                self.say(f"Mandei para {p['title']}!", "reply")
+            except Exception as e:
+                self.agent.log("error", f"WhatsApp: {e}"[:160])
+                self.say("Não consegui mandar, deu problema no WhatsApp.", "reply")
+
+        threading.Thread(target=send, daemon=True).start()
+        return True
+
+    def _wa_answer(self, text):
+        """Resposta por voz à confirmação de envio. True se a fala era só sim/não."""
+        p = self.wa_pending
+        if not p:
+            return False
+        if time.time() - p["at"] > 180:
+            self._set_wa_pending(None)
+            return False
+        plain = unicodedata.normalize("NFD", text.lower()).encode("ascii", "ignore").decode()
+        words = re.findall(r"[a-z]+", plain)
+        doubt = {"nao", "muda", "espera", "calma", "troca", "corrige", "mas", "cancela"}
+        if words and len(words) <= 5 and not doubt & set(words) and words[0] in (
+                "sim", "pode", "manda", "mande", "envia", "envie", "confirmo", "confirma", "isso", "ok", "beleza", "claro", "guara"):
+            return self.wa_decide(True)
+        if words and len(words) <= 3 and words[0] in ("nao", "cancela", "deixa", "esquece", "para"):
+            return self.wa_decide(False)
+        self._set_wa_pending(None)
+        return False                                    # pediu mudança: segue para a IA, sem enviar
 
     # ------------------------------------------------------------ avisos falados
 
     def on_stop(self, project, summary, turn_seconds, pc_idle_ms):
-        """Fala o fim de uma tarefa só se foi longa ou se você saiu de perto do PC."""
-        if turn_seconds > 45 or pc_idle_ms > 60_000:
+        """Fala o fim de uma tarefa só se você saiu de perto do PC (na frente dele você já vê o aviso;
+        falar a cada tarefa longa deixava o Guará falando sozinho enquanto você programava)."""
+        if turn_seconds > 20 and pc_idle_ms > 60_000:
             first = re.split(r"(?<=[.!?])\s", speakable(summary, 200))[0] if summary else ""
             self.say_async(f"Opa, prontinho! Terminei lá no {project}. {first}")
 

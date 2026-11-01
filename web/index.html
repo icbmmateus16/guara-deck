@@ -29,6 +29,8 @@
       <div class="ibtn subtle" id="askbtn" data-act="compose" data-icon="kbd" title="Escrever"></div>
     </div>
 
+    <div id="game-mode" class="hidden" role="status">Modo jogo · converse pelo botão Escrever. A voz volta ao fechar o jogo.</div>
+
     <div id="feed">
       <div class="fhead"><span>AGENTES ATIVOS</span><span id="sesscount" class="count"></span></div>
       <div id="sessions"></div>
@@ -188,14 +190,15 @@
       <div class="row">
         <div class="badge" data-icon="shield"></div>
         <div class="grow minw">
-          <div class="stitle">Aprovar ação</div>
+          <div id="perm-title" class="stitle">Aprovar ação</div>
           <div id="perm-who" class="who-wrap"></div>
         </div>
       </div>
       <div id="perm-tool"></div>
       <div id="perm-detail" class="code"></div>
+      <div id="perm-ask"></div>
       <div class="timer"><u id="perm-time"></u></div>
-      <div class="row gap">
+      <div id="perm-buttons" class="row gap">
         <div class="btn huge deny grow" data-act="perm-deny" data-icon="x"><span>Negar</span></div>
         <div class="btn huge allow grow" data-act="perm-allow" data-icon="check"><span>Aprovar</span></div>
       </div>
@@ -256,6 +259,23 @@
   </div>
 
   <!-- Folha de escrita e avisos globais: funcionam tanto no painel quanto na tela cheia -->
+  <!-- Folha de confirmação de envio no WhatsApp (botões Enviar/Cancelar + "sim" por voz) -->
+  <div id="wa-confirm" class="sheet modal hidden">
+    <div class="row">
+      <div class="badge wa-badge" data-icon="chat"></div>
+      <div class="grow minw">
+        <div class="stitle">Enviar no WhatsApp?</div>
+        <div class="meta">Para: <b id="wa-who" style="color:#F5F5F7"></b> · diga "sim" ou toque abaixo</div>
+      </div>
+    </div>
+    <div id="wa-text" class="wa-preview"></div>
+    <div class="row gap">
+      <div class="btn huge deny grow" data-act="wa-cancel" data-icon="x"><span>Cancelar</span></div>
+      <div class="btn huge allow grow" data-act="wa-send" data-icon="check"><span>Enviar</span></div>
+    </div>
+  </div>
+
+
   <div id="compose" class="sheet modal hidden">
     <div class="row between">
       <div>

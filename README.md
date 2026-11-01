@@ -50,8 +50,11 @@ O Guará oficial é o **pixel art que aparece abaixo**. Ele muda de expressão, 
 | **Atalhos e projetos** | Abrir aplicativos, pastas, editor e terminal; consultar Git e containers Docker. |
 | **Agentes** | Acompanhar sessões do Claude Code e do Codex; responder pedidos de aprovação do Claude. |
 | **Voz** | Conversar pelo microfone, ouvir respostas e receber avisos de tarefas. Requer componentes extras. |
+| **WhatsApp** | Consultar mensagens, ouvir áudios, resumir grupos e confirmar respostas no tablet. Requer vinculação ao WhatsApp Web. |
+| **Modo jogo** | Pausar a captura de voz durante jogos e liberar o modelo de transcrição da GPU. |
 | **Música** | Buscar no YouTube e reproduzir no PC ou pelo áudio nativo do app. Requer ferramentas extras. |
 | **Modo Guará** | Deixar o mascote em tela cheia, com céu, chuva e luz do dia baseados no clima. |
+| **Tablet Genesis** | Efeitos na logo iluminada e botão de hotspot ACESSO no GNOME 50. Recursos opcionais específicos da instalação. |
 
 A interface usa JavaScript ES5 por causa do WebView antigo. O app Android é uma casca em tela cheia com microfone, áudio PCM e descoberta do servidor pela rede.
 

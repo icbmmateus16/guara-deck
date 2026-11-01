@@ -1,0 +1,7 @@
+{
+  "uuid": "acesso-hotspot@tablet-control",
+  "name": "Hotspot ACESSO",
+  "description": "Botão manual para o hotspot ACESSO nas configurações rápidas. Nunca liga a rede ao carregar.",
+  "shell-version": ["50"],
+  "version": 1
+}

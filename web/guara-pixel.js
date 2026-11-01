@@ -484,12 +484,14 @@
     });
   }
 
+  // Cada quadro custa caro no WebView do Android 4.4 (recompõe a janela inteira): a 8-14 quadros/s parado o
+  // painel ocupava um núcleo e o toque atrasava. Pixel art parada fica bem a 5-6; fala e escuta seguem a 16.
   function fps() {
     if (st.talk > 0 || st.listening || st.t < st.petUntil) return 16;
     if (!st.awake || st.mood === 'sleeping') return 4;
-    if (st.mood === 'done' || st.jump > 0 || st.sparks.length || st.meteor || st.fruit || drops.length || SKY.storm) return 14;
-    if (st.mood === 'idle') return 8;
-    return 10;
+    if (st.mood === 'done' || st.jump > 0 || st.sparks.length || st.meteor || st.fruit || drops.length || SKY.storm) return 10;
+    if (st.mood === 'idle') return 5;
+    return 6;
   }
 
   var paused = false;   // tela "apagada": a animação para de vez

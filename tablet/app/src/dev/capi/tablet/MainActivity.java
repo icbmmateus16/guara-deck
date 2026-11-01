@@ -55,6 +55,8 @@ public class MainActivity extends Activity {
     private static MainActivity current;
 
     private WebView web;
+    private GenesisLed logo;
+    private volatile boolean logoActive;
     private SharedPreferences prefs;
     private final Handler ui = new Handler();
     private String token = "";
@@ -65,10 +67,16 @@ public class MainActivity extends Activity {
     private WifiManager.MulticastLock multicast;
     private volatile boolean listening = false;
     private volatile boolean handsFree = false;      // mãos livres: escuta o tempo todo esperando "Guará"
+    private volatile boolean handsFreeMode = false;  // escolha do usuário, independente da pausa temporária
+    private final AtomicInteger recordGen = new AtomicInteger(0);
+    private volatile AudioRecord manualRecorder = null;
+    private volatile AudioRecord wakeRecorder = null;
     private volatile boolean wakeRecActive = false;
+    private final AtomicInteger wakeGen = new AtomicInteger(0);
+    private volatile long lastAudioEndedAt = 0;
     private final Object audioLock = new Object();
     private final AtomicInteger playGen = new AtomicInteger(0);
-    private AudioTrack activeTrack = null;
+    private volatile AudioTrack activeTrack = null;
     private String lastClipId = "";
     private long lastClipAt = 0;
     private final AtomicInteger ytGen = new AtomicInteger(0);
@@ -82,6 +90,7 @@ public class MainActivity extends Activity {
         MainActivity old = current;
         current = this;
         if (old != null && !old.isFinishing()) old.finish();
+        logo = new GenesisLed(android.os.Process.myUid());
         requestWindowFeature(Window.FEATURE_NO_TITLE);
         getWindow().addFlags(WindowManager.LayoutParams.FLAG_FULLSCREEN
                 | WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON
@@ -162,6 +171,7 @@ public class MainActivity extends Activity {
     }
 
     private void openPanel() {
+        logo.update("idle", 0);
         online = true;
         stopAudioInternal();
         try { web.evaluateJavascript("if(window.__capiCleanup)window.__capiCleanup()", null); } catch (Exception ignored) {}
@@ -170,6 +180,7 @@ public class MainActivity extends Activity {
     }
 
     private void showOffline() {
+        logo.update("idle", 0);
         if (!online && OFFLINE.equals(web.getUrl())) return;
         online = false;
         web.loadUrl(OFFLINE);
@@ -252,26 +263,71 @@ public class MainActivity extends Activity {
         public void lost() {
             ui.post(new Runnable() {
                 @Override
-                public void run() { online = false; }  // o próximo anúncio do PC recarrega o painel
+                public void run() { online = false; logo.update("idle", 0); }  // o próximo anúncio do PC recarrega o painel
             });
         }
 
         @JavascriptInterface
-        public String version() { return "6"; }
+        public String version() { return "8"; }
+
+        @JavascriptInterface
+        public void setLogoState(String state, int level) {
+            if (current == MainActivity.this && running && logoActive) logo.update(state, level);
+        }
+
+        @JavascriptInterface
+        public void logoEvent(String name) {
+            if (current == MainActivity.this && running && logoActive) logo.event(name);
+        }
+
+        /** "Plim" curto tocado aqui mesmo depois do "Guará": o "Pode falar" falado vinha do PC e custava ~2 s. */
+        @JavascriptInterface
+        public void chime() {
+            if (current != MainActivity.this || !running) return;
+            new Thread(new Runnable() {
+                public void run() { playChime(); }
+            }, "capi-chime").start();
+        }
+
+        @JavascriptInterface
+        public void setVoiceMode(boolean automatic) {
+            handsFreeMode = automatic;
+            if (!automatic) {
+                setHandsFree(false);
+                cancelListen();
+            }
+        }
 
         @JavascriptInterface
         public void setHandsFree(boolean on) {
+            if (on && !handsFreeMode) return;
             if (on == handsFree) return;
             handsFree = on;
-            if (on) new Thread(new WakeLoop(), "capi-wake").start();
+            int gen = wakeGen.incrementAndGet();
+            if (!on && wakeRecorder != null) {
+                try { wakeRecorder.stop(); } catch (Exception ignored) { }
+            }
+            if (on) new Thread(new WakeLoop(gen), "capi-wake").start();
         }
 
         @JavascriptInterface
         public void listen() {
-            if (listening) return;
-            stopAudioInternal();
-            listening = true;
-            new Thread(new Recorder(), "capi-mic").start();
+            startRecording(false);
+        }
+
+        @JavascriptInterface
+        public void listenAfterWake() {
+            startRecording(true);
+        }
+
+        @JavascriptInterface
+        public void cancelListen() {
+            recordGen.incrementAndGet();
+            listening = false;
+            AudioRecord recorder = manualRecorder;
+            if (recorder != null) {
+                try { recorder.stop(); } catch (Exception ignored) { }
+            }
         }
 
         @JavascriptInterface
@@ -337,11 +393,45 @@ public class MainActivity extends Activity {
         }
     }
 
+    private static short[] chimePcm(int rate) {
+        int n = rate * 24 / 100;                       // 240 ms: duas notas subindo (mi, lá) que somem rápido
+        short[] out = new short[n];
+        for (int i = 0; i < n; i++) {
+            double t = (double) i / rate;
+            boolean second = t >= 0.08;
+            double tt = second ? t - 0.08 : t;
+            double env = Math.exp(-tt * 16) * Math.min(1, tt * 300);
+            out[i] = (short) (Math.sin(2 * Math.PI * (second ? 1760.0 : 1318.5) * tt) * env * 9000);
+        }
+        return out;
+    }
+
+    private void playChime() {
+        int rate = 22050;
+        short[] pcm = chimePcm(rate);
+        AudioTrack track = null;
+        try {
+            track = new AudioTrack(AudioManager.STREAM_MUSIC, rate, AudioFormat.CHANNEL_OUT_MONO,
+                    AudioFormat.ENCODING_PCM_16BIT, pcm.length * 2, AudioTrack.MODE_STATIC);
+            track.write(pcm, 0, pcm.length);
+            track.play();
+            Thread.sleep(pcm.length * 1000L / rate + 60);
+        } catch (Exception ignored) {
+        } finally {
+            if (track != null) {
+                try { track.stop(); } catch (Exception ignored) { }
+                track.release();
+            }
+            lastAudioEndedAt = android.os.SystemClock.elapsedRealtime();
+        }
+    }
+
     private void stopYtInternal() {
         ytGen.incrementAndGet();
         activeYtId = "";
         ytPaused = false;
         AudioTrack t = ytTrack;
+        if (t != null) lastAudioEndedAt = android.os.SystemClock.elapsedRealtime();
         ytTrack = null;
         if (t != null) {
             try { t.pause(); t.flush(); t.stop(); } catch (Exception ignored) {}
@@ -405,7 +495,10 @@ public class MainActivity extends Activity {
             } catch (Exception ignored) {
             } finally {
                 if (c != null) c.disconnect();
-                if (ytTrack == track) ytTrack = null;
+                if (ytTrack == track) {
+                    lastAudioEndedAt = android.os.SystemClock.elapsedRealtime();
+                    ytTrack = null;
+                }
                 if (track != null) {
                     try { track.stop(); } catch (Exception ignored) {}
                     try { track.release(); } catch (Exception ignored) {}
@@ -422,6 +515,7 @@ public class MainActivity extends Activity {
         playGen.incrementAndGet();
         synchronized (audioLock) {
             if (activeTrack != null) {
+                lastAudioEndedAt = android.os.SystemClock.elapsedRealtime();
                 try { activeTrack.pause(); activeTrack.flush(); activeTrack.stop(); } catch (Exception ignored) {}
                 try { activeTrack.release(); } catch (Exception ignored) {}
                 activeTrack = null;
@@ -518,7 +612,10 @@ public class MainActivity extends Activity {
             } catch (Exception ignored) {
             } finally {
                 synchronized (audioLock) {
-                    if (activeTrack == track) activeTrack = null;
+                    if (activeTrack == track) {
+                        lastAudioEndedAt = android.os.SystemClock.elapsedRealtime();
+                        activeTrack = null;
+                    }
                 }
                 if (track != null) {
                     try { track.stop(); } catch (Exception ignored) {}
@@ -545,9 +642,17 @@ public class MainActivity extends Activity {
      */
     private class WakeLoop implements Runnable {
         private static final int RATE = 16000;
+        private final int generation;
+
+        WakeLoop(int generation) { this.generation = generation; }
+
+        private boolean enabled() {
+            return handsFreeMode && handsFree && running && wakeGen.get() == generation;
+        }
 
         private boolean busy() {
-            return listening || activeTrack != null || (ytTrack != null && !ytPaused);
+            return listening || activeTrack != null || (ytTrack != null && !ytPaused)
+                    || android.os.SystemClock.elapsedRealtime() - lastAudioEndedAt < 1500;
         }
 
         private void nap(long ms) {
@@ -559,7 +664,7 @@ public class MainActivity extends Activity {
             int min = AudioRecord.getMinBufferSize(RATE, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT);
             short[] buf = new short[RATE / 10];                 // blocos de 100 ms
             double noise = 300;
-            while (handsFree && running) {
+            while (enabled()) {
                 if (busy()) { nap(250); continue; }
                 AudioRecord rec = null;
                 ByteArrayOutputStream pcm = null;
@@ -569,9 +674,11 @@ public class MainActivity extends Activity {
                 try {
                     rec = new AudioRecord(MediaRecorder.AudioSource.VOICE_RECOGNITION, RATE,
                             AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT, Math.max(min, RATE) * 2);
+                    wakeRecorder = rec;
+                    if (!enabled()) continue;
                     rec.startRecording();
                     wakeRecActive = true;
-                    while (handsFree && running && !busy()) {
+                    while (enabled() && !busy()) {
                         int n = rec.read(buf, 0, buf.length);
                         if (n <= 0) continue;
                         byte[] chunk = new byte[n * 2];
@@ -598,7 +705,7 @@ public class MainActivity extends Activity {
                         } else {
                             pcm.write(chunk, 0, chunk.length);
                             if (rms > Math.max(300, noise * 1.5)) lastVoice = now;
-                            if (now - lastVoice > 900 || now - startedAt > 8000) break;
+                            if (now - lastVoice > 800 || now - startedAt > 8000) break;
                         }
                     }
                 } catch (Exception e) {
@@ -609,12 +716,15 @@ public class MainActivity extends Activity {
                         rec.release();
                     }
                     wakeRecActive = false;
+                    if (wakeRecorder == rec) wakeRecorder = null;
                 }
-                if (spoke && pcm != null && pcm.size() > RATE * 2 * 6 / 10 && !listening) send(pcm.toByteArray());
+                if (enabled() && !busy() && spoke && pcm != null
+                        && pcm.size() > RATE * 2 * 6 / 10) send(pcm.toByteArray());
             }
         }
 
         private void send(byte[] raw) {
+            if (!enabled() || busy()) return;
             try {
                 byte[] wav = new Recorder().wav(raw);
                 HttpURLConnection c = (HttpURLConnection) new URL(panelUrl().replace("/?t=", "/api/voice?wake=1&t=")).openConnection();
@@ -633,6 +743,14 @@ public class MainActivity extends Activity {
         }
     }
 
+    private synchronized void startRecording(boolean automatic) {
+        if (!running || listening || (automatic && !handsFreeMode)) return;
+        stopAudioInternal();
+        listening = true;
+        int generation = recordGen.incrementAndGet();
+        new Thread(new Recorder(generation, automatic), "capi-mic").start();
+    }
+
     /**
      * Grava 16 kHz mono e para sozinho depois de 2 s de silêncio. Dois limiares calibrados pelo
      * ruído da sala nos primeiros 400 ms: um mais alto para perceber que você começou a falar e
@@ -640,6 +758,18 @@ public class MainActivity extends Activity {
      */
     private class Recorder implements Runnable {
         private static final int RATE = 16000;
+        private final int generation;
+        private final boolean automatic;
+
+        Recorder() { this(-1, false); } // também fornece o empacotador WAV para o mãos livres
+        Recorder(int generation, boolean automatic) {
+            this.generation = generation;
+            this.automatic = automatic;
+        }
+
+        private boolean valid() {
+            return running && recordGen.get() == generation && (!automatic || handsFreeMode);
+        }
 
         @Override
         public void run() {
@@ -647,6 +777,7 @@ public class MainActivity extends Activity {
             for (int w = 0; wakeRecActive && w < 40; w++) {
                 try { Thread.sleep(25); } catch (InterruptedException ignored) { }
             }
+            if (!valid() || !listening) return;
             int min = AudioRecord.getMinBufferSize(RATE, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT);
             AudioRecord rec = null;
             ByteArrayOutputStream pcm = new ByteArrayOutputStream();
@@ -654,14 +785,19 @@ public class MainActivity extends Activity {
             try {
                 rec = new AudioRecord(MediaRecorder.AudioSource.VOICE_RECOGNITION, RATE,
                         AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT, Math.max(min, RATE) * 2);
+                manualRecorder = rec;
+                if (!valid() || !listening) return;
                 rec.startRecording();
                 js("CapiVoice.state('ouvindo')");
                 short[] buf = new short[RATE / 10];          // blocos de 100 ms
                 byte[] bytes = new byte[buf.length * 2];
                 long start = System.currentTimeMillis(), lastVoice = start;
-                double noise = 0, startTh = 800, keepTh = 450;
+                // Piso do ambiente: desce na hora e sobe devagar (1,5% a cada 100 ms). Música ou TV ao fundo
+                // viram piso e o "parei de falar" é medido acima dele; o pico da sua voz também conta.
+                // Antes o limiar era fixo e, com música no PC, o microfone ficava os 30 s inteiros aberto.
+                double floor = -1, peak = 0, startTh = 450;
                 int blocks = 0;
-                while (listening) {
+                while (listening && valid()) {
                     int n = rec.read(buf, 0, buf.length);
                     if (n <= 0) continue;
                     double sum = 0;
@@ -673,31 +809,29 @@ public class MainActivity extends Activity {
                     pcm.write(bytes, 0, n * 2);
                     double rms = Math.sqrt(sum / n);
                     long now = System.currentTimeMillis();
-                    if (++blocks <= 4) {
-                        noise += rms / 4;
-                        if (blocks == 4) {
-                            startTh = Math.max(450, noise * 2.2);
-                            keepTh = Math.max(260, noise * 1.4);
-                        }
-                    } else {
-                        if (rms > startTh) spoke = true;
-                        if (spoke && rms > keepTh) lastVoice = now;   // ainda falando, mesmo baixinho
-                    }
+                    floor = floor < 0 || rms < floor ? rms : floor * 1.015;
+                    // nos primeiros 400 ms você pode já estar falando: a primeira palavra não vira piso
+                    startTh = ++blocks <= 4 ? 450 : Math.max(450, floor * 2.2);
+                    double keepTh = Math.max(Math.max(260, floor * 1.6), peak * 0.12);
+                    if (rms > startTh) { spoke = true; lastVoice = now; }
+                    else if (spoke && rms > keepTh) lastVoice = now;   // ainda falando, mesmo baixinho
+                    if (spoke) peak = Math.max(peak, rms);
                     js("CapiVoice.level(" + Math.min(9, (int) (rms / startTh * 4)) + ")");
-                    if (spoke && now - lastVoice > 2000) break;   // 2 s de silêncio: terminou
-                    if (!spoke && now - start > 8000) break;      // ninguém falou
-                    if (now - start > 30000) break;               // limite de segurança
+                    if (spoke && now - lastVoice > 1700) break;   // 1,7 s sem voz: terminou
+                    if (!spoke && now - start > 7000) break;      // ninguém falou
+                    if (now - start > 20000) break;               // limite de segurança
                 }
             } catch (Exception e) {
-                js("CapiVoice.state('erro')");
-                listening = false;
+                if (valid()) { js("CapiVoice.state('erro')"); listening = false; }
                 return;
             } finally {
                 if (rec != null) {
                     try { rec.stop(); } catch (Exception ignored) { }
                     rec.release();
                 }
+                if (manualRecorder == rec) manualRecorder = null;
             }
+            if (!valid()) return;
             listening = false;
             if (!spoke) {
                 js("CapiVoice.state('nada')");
@@ -713,14 +847,15 @@ public class MainActivity extends Activity {
                 c.setRequestMethod("POST");
                 c.setRequestProperty("Content-Type", "audio/wav");
                 c.setFixedLengthStreamingMode(wav.length);
+                if (!valid()) { c.disconnect(); return; }
                 OutputStream out = c.getOutputStream();
                 out.write(wav);
                 out.close();
                 int code = c.getResponseCode();
                 c.disconnect();
-                js("CapiVoice.state('" + (code == 200 ? "enviado" : "erro") + "')");
+                if (valid()) js("CapiVoice.state('" + (code == 200 ? "enviado" : "erro") + "')");
             } catch (Exception e) {
-                js("CapiVoice.state('erro')");
+                if (valid()) js("CapiVoice.state('erro')");
             }
         }
 
@@ -777,12 +912,15 @@ public class MainActivity extends Activity {
     @Override
     protected void onResume() {
         super.onResume();
+        logoActive = true;
         immersive();
         web.onResume();
     }
 
     @Override
     protected void onPause() {
+        logoActive = false;
+        logo.update("idle", 0);
         web.onPause();
         super.onPause();
     }
@@ -802,6 +940,10 @@ public class MainActivity extends Activity {
     protected void onDestroy() {
         if (current == this) current = null;
         running = false;
+        logo.close();
+        handsFree = handsFreeMode = listening = false;
+        wakeGen.incrementAndGet();
+        recordGen.incrementAndGet();
         stopAudioInternal();
         stopYtInternal();
         if (multicast != null && multicast.isHeld()) multicast.release();

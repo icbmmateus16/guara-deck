@@ -630,6 +630,16 @@ h2, h3 { margin: 0; font-family: Inter, sans-serif; font-weight: 600; letter-spa
 .timer { height: 4px; border-radius: 2px; background: #2C2C2E; margin: 12px 0; position: relative; overflow: hidden; }
 .timer u { position: absolute; left: 0; top: 0; bottom: 0; background: #FFD60A; }
 #perm-queue { margin-top: 10px; }
+/* no Modo Guará o pedido aparece por cima do personagem, sem sair da tela cheia */
+#perm.over { position: fixed; left: 50%; right: auto; bottom: 12px; width: 660px; margin-left: -330px; z-index: 30; }
+/* pergunta de múltipla escolha do Claude: cada opção é um botão grande */
+#perm-ask { max-height: 300px; overflow-y: auto; }
+.askq { margin-top: 10px; font-size: 16px; font-weight: 600; color: #F5F5F7; line-height: 1.35; }
+.askq .tag { margin-right: 8px; vertical-align: 2px; }
+.askopt { margin-top: 8px; padding: 12px 14px; min-height: 52px; border-radius: 12px; background: #2C2C2E; border: 2px solid transparent; }
+.askopt b { display: block; font-size: 16px; color: #F5F5F7; }
+.askopt span { display: block; margin-top: 2px; font-size: 12.5px; color: #98989F; }
+.askopt.sel { background: rgba(48,209,88,0.16); border-color: #30D158; }
 .pq { display: -webkit-flex; display: flex; -webkit-align-items: center; align-items: center; padding: 6px 0; border-top: 1px solid #2C2C2E; font-size: 13px; }
 .pq .code { -webkit-flex: 1; flex: 1; min-width: 0; margin-left: 8px; color: #98989F; font-size: 12px; }
 
@@ -997,3 +1007,14 @@ b, .num, .gauge b, .credit b, .win b, #clock, #amb-clock { -webkit-font-feature-
 .hfpill.on { background: #30D158; color: #FFFFFF; }
 .hfpill.on svg { color: #FFFFFF; }
 .hfpill.pressed { opacity: 0.8; -webkit-transform: translateX(-50%) scale(0.96); transform: translateX(-50%) scale(0.96); }
+
+/* O jogo fica com a GPU; a conversa continua pelo teclado. */
+#game-mode { margin: 0 12px 8px; padding: 9px 12px; border-radius: 10px;
+  background: #2C2C2E; color: #FFB35C; font-size: 12px; line-height: 1.4; }
+
+.wa-badge { background: #25D366; color: #082010; }
+.wa-preview {
+  margin: 14px 0 12px; padding: 14px 16px; border-radius: 14px;
+  background: #2C2C2E; color: #F5F5F7; font-size: 18px; font-weight: 500;
+  line-height: 1.38; max-height: 180px; overflow-y: auto; word-wrap: break-word;
+}

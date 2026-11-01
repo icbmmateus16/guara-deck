@@ -9,7 +9,9 @@ import socket
 import subprocess
 import threading
 import time
+import unicodedata
 import urllib.request
+import xml.etree.ElementTree as ET
 from pathlib import Path
 
 import psutil
@@ -301,10 +303,29 @@ def favorite_ids():
     return re.findall(r"'([^']+)\.desktop'", raw)
 
 
+def frequent_ids(limit=12):
+    """Frequência real de uso registrada pelo GNOME, sem inventar uma lista fixa."""
+    try:
+        root = ET.parse(Path.home() / '.local/share/gnome-shell/application_state')
+        apps = sorted(root.findall('.//application'),
+                      key=lambda app: float(app.get('score', '0')), reverse=True)
+        ids = []
+        for app in apps:
+            app_id = app.get('id', '').removesuffix('.desktop')
+            if (re.fullmatch(r'[\w.-]+', app_id) and app_id not in ids
+                    and float(app.get('score', '0')) > 0 and desktop_entry(app_id)):
+                ids.append(app_id)
+            if len(ids) >= limit:
+                break
+        return ids
+    except (OSError, ET.ParseError, ValueError):
+        return []
+
+
 def apps_catalog(extra):
-    """Os apps da dock do GNOME (o que você mais usa, na sua ordem) e depois os atalhos extras da config."""
+    """Mais usados, apps fixados na dock e atalhos extras, sem duplicatas."""
     items, seen = [], set()
-    for app_id in favorite_ids():
+    for app_id in frequent_ids() + favorite_ids():
         e = desktop_entry(app_id)
         if e and app_id not in seen:
             seen.add(app_id)
@@ -330,18 +351,31 @@ def open_target(item, shortcuts):
     if re.fullmatch(r"https?://[^\s'\"<>`]+", item):
         _spawn(["gio", "open", item])
         return True
-    if item in favorite_ids():
+    if item in favorite_ids() + frequent_ids():
         return launch_app(item)[0]
     low = item.lower()
     sc = next((s for s in shortcuts if low in (s["id"], s["label"].lower(), s.get("target", "").lower())), None)
     if sc and sc.get("kind") in ("app", "open"):
         return run_shortcut(sc)[0]
+    # a IA fala o nome que aparece na aba Apps ("VS Code", "Steam"), não o id do .desktop
+    want = _label_key(item)
+    for app in apps_catalog(shortcuts) if want else []:
+        if want in (_label_key(app["label"]), _label_key(app["id"])):
+            if app["kind"] == "app":
+                return launch_app(app["id"])[0]
+            sc = next((s for s in shortcuts if s["id"] == app["id"]), None)
+            return bool(sc) and run_shortcut(sc)[0]
     return False
 
 
+def _label_key(text):
+    plain = unicodedata.normalize("NFD", (text or "").lower()).encode("ascii", "ignore").decode()
+    return re.sub(r"[^a-z0-9]+", "", plain)
+
+
 def launch_app(app_id):
-    if app_id not in favorite_ids():
-        return False, "app fora da dock"
+    if app_id not in favorite_ids() + frequent_ids():
+        return False, "app fora da lista de fixados e mais usados"
     path = find_desktop(app_id)
     if not path:
         return False, f"app {app_id} não encontrado"

@@ -37,7 +37,7 @@
   var S = {
     agent: { mood: 'idle', sessions: [], permissions: [], subagents: 0 },
     stats: {}, media: {}, volume: {}, shortcuts: [], missions: [], mission: null, toggles: {}, quota: {}, pc: {},
-    dev: null, connected: false, lastEvent: 0, cpuHist: [], tab: 'inicio', missionClosed: null,
+    dev: null, apps: [], connected: false, lastEvent: 0, cpuHist: [], tab: 'inicio', missionClosed: null,
     pcIdle: 0, permShown: null, permSel: null, composeConversational: false
   };
 
@@ -75,11 +75,12 @@
       if (S.uiVer && d.ui_ver && S.uiVer !== d.ui_ver) { hardReload(); return; }
       S.uiVer = d.ui_ver || '';
       S.shortcuts = d.shortcuts; S.missions = d.missions;
-      renderDock(); renderMissions();
+      renderDock(); renderMissions(); loadApps();
       onAgent(d.agent); onStats(d.stats); onMedia(d.media); onVolume(d.volume);
       onToggles(d.toggles || {}); onQuota(d.quota || {}); onPC(d.pcctl || {});
       if (d.mission) onMission(d.mission);
       if (d.voice) onVoice(d.voice);
+      onWaConfirm(d.wa_pending || null);
       if (d.sky && Guara.setSky) Guara.setSky(d.sky);
       renderActivity(d.activity || []);
       setConnected(true);
@@ -95,17 +96,18 @@
     on('pcctl', onPC);
     on('attention', function () { Power.wake(); });
     on('say', function (d) { Voice.play(d); });
+    on('reply', function (d) { Voice.textReply(d); });
     on('thinking', function (d) { Voice.thinking(d.text, d.id); });
     on('heard', function (d) { Voice.heard(d); });
     on('voice', onVoice);
+    on('listen_ready', function () { Voice.finishInvite(); });
+    on('wa_confirm', onWaConfirm);
     on('activity', renderActivity);
     on('style', function () { location.reload(); });
     on('sky', function (d) { if (Guara.setSky) Guara.setSky(d); });
     on('wake', function () {   // disse só "Guará": acende a tela e abre o microfone para o pedido
       if (!HF.on || Voice.mic !== 'idle' || S.permShown) return;
-      ScreenOff.exit();
-      Power.wake();
-      Voice.toggleMic();
+      Voice.invite();
     });
     on('reload', hardReload);
     es.onerror = function () {
@@ -118,6 +120,7 @@
 
   function setConnected(ok) {
     S.connected = ok;
+    if (Voice) Voice.logo();
     if (ok) S.lastEvent = Date.now();
     $('conn').className = ok ? 'on' : '';
     $('conn').lastChild.textContent = ok ? 'online' : 'offline';
@@ -293,6 +296,7 @@
       $('sub').textContent = sub;
     }
     if (before !== a.mood && (a.mood === 'waiting' || a.mood === 'done' || a.mood === 'error')) Power.wake();
+    if (before !== a.mood && (a.mood === 'done' || a.mood === 'error')) Voice.logoEvent(a.mood);
     renderSessions();
     renderPermission();
     Ambient.update();
@@ -320,16 +324,27 @@
     show($('perm'), !!p);
     if (!p) { S.permShown = null; S.permSel = null; return; }
     ScreenOff.exit();  // pedido de aprovação acende a tela, como uma notificação
-    Ambient.exit();   // aprovar precisa dos botões: sai da tela cheia automaticamente
+    // no Modo Guará o pedido aparece por cima do personagem, sem sair da tela cheia
+    $('perm').className = $('perm').className.replace(/\s*over/g, '') + (Ambient.on ? ' over' : '');
     if (S.permShown !== p.id) {
       S.permShown = p.id;
+      S.permAnswers = {};
       S.permStart = Date.now() - p.age * 1000;
       Power.wake();
     }
     var who = { agent: p.mission ? 'guara' : 'claude', source: p.source };
     $('perm-who').innerHTML = whoTag(who) + ' <span class="meta">em ' + esc(p.project || 'projeto') + '</span>';
-    $('perm-tool').textContent = p.tool === 'Bash' ? 'Quer rodar este comando:' : (p.tool === 'Edit' || p.tool === 'Write' ? 'Quer alterar o arquivo:' : 'Quer usar ' + p.tool + ':');
-    $('perm-detail').textContent = p.detail || '';
+    var asking = !!(p.questions && p.questions.length);
+    var oneTap = asking && p.questions.length === 1 && !p.questions[0].multiSelect;
+    $('perm-title').textContent = asking ? 'Responder pergunta' : 'Aprovar ação';
+    $('perm-tool').textContent = asking ? 'O Claude quer saber:' : (p.tool === 'Bash' ? 'Quer rodar este comando:' : (p.tool === 'Edit' || p.tool === 'Write' ? 'Quer alterar o arquivo:' : 'Quer usar ' + p.tool + ':'));
+    $('perm-detail').textContent = asking ? '' : (p.detail || '');
+    show($('perm-detail'), !asking);
+    var ask = asking ? askHtml(p) : '';
+    if (ask !== S.permAskHtml) { S.permAskHtml = ask; $('perm-ask').innerHTML = ask; }   // não perde a rolagem
+    $('perm-buttons').firstElementChild.lastChild.textContent = asking ? 'Recusar' : 'Negar';
+    $('perm-buttons').lastElementChild.lastChild.textContent = asking ? 'Enviar resposta' : 'Aprovar';
+    show($('perm-buttons').lastElementChild, !oneTap);   // uma pergunta só: tocar na opção já responde
     var q = '';
     for (var j = 0; j < perms.length; j++) {
       if (perms[j].id === p.id) continue;
@@ -346,6 +361,25 @@
     var left = 1 - (Date.now() - S.permStart) / (S.permTimeout * 1000);
     $('perm-time').style.width = Math.max(0, left * 100) + '%';
   }, 500);
+
+  function onWaConfirm(p) {
+    S.waPending = p || null;
+    show($('wa-confirm'), !!p);
+    if (!p) return;
+    ScreenOff.exit();
+    Power.wake();
+    $('wa-who').textContent = p.title || '';
+    $('wa-text').textContent = p.text || '';
+  }
+
+  function decideWa(send) {
+    if (!S.waPending) return;
+    S.waPending = null;
+    show($('wa-confirm'), false);
+    Voice.stop();
+    api('POST', '/api/whatsapp/confirm', { send: !!send }, null);
+    toast(send ? 'Enviando no WhatsApp…' : 'Envio cancelado');
+  }
 
   function renderActivity(list) {
     var html = '', verbs = /^(Claude terminou|Você aprovou|Você negou|Claude aberto|Claude parou|Você:)/;
@@ -495,11 +529,12 @@
   // Início: os cinco mais usados, grandes, e "Todos" leva para a aba Apps
   function renderDock() {
     var html = '', n = 0;
-    for (var k = 0; k < S.shortcuts.length && n < 5; k++) {
-      var s = S.shortcuts[k];
+    var apps = S.apps.length ? S.apps : S.shortcuts;
+    for (var k = 0; k < apps.length && n < 5; k++) {
+      var s = apps[k];
       if (s.icon === 'lock' || s.icon === 'camera' || s.icon === 'gear') continue;
       n++;
-      html += '<div class="app" data-act="shortcut" data-id="' + esc(s.id) + '" data-label="' + esc(s.label) + '">' +
+      html += '<div class="app" data-act="' + (s.kind === 'app' ? 'app' : 'shortcut') + '" data-id="' + esc(s.id) + '" data-label="' + esc(s.label) + '">' +
         appIcon(s, 34) + '<div class="ellipsis">' + esc(s.label) + '</div></div>';
     }
     html += '<div class="app" data-act="tab" data-tab="apps"><i class="asvg">' + svg('grid', 22) + '</i><div>Todos</div></div>';
@@ -509,6 +544,8 @@
   function loadApps() {
     api('GET', '/api/apps', null, function (code, d) {
       if (code !== 200 || !d || !d.apps) { $('appgrid').innerHTML = '<div class="empty">Não consegui ler os apps do PC.</div>'; return; }
+      S.apps = d.apps;
+      renderDock();
       var html = '';
       for (var i = 0; i < d.apps.length; i++) {
         var a = d.apps[i];
@@ -809,15 +846,33 @@
     on: false,
     set: function (on, quiet) {
       HF.on = !!on;
-      try { localStorage.setItem('guara-hf', HF.on ? '1' : '0'); } catch (e) {}
-      if (NATIVE && NATIVE.setHandsFree) NATIVE.setHandsFree(HF.on);
-      $('hfbtn').className = 'ibtn subtle' + (HF.on ? ' on' : '');
-      $('amb-hf').className = 'hfpill' + (HF.on ? ' on' : '');
-      $('amb-hf').lastChild.textContent = HF.on ? 'Ouvindo “Guará”' : 'Mãos livres';
+      if (NATIVE && NATIVE.setVoiceMode) NATIVE.setVoiceMode(HF.on);
+      if (!HF.on) {
+        Voice.cancelCapture();
+      }
+      HF.report();
+      try { localStorage.setItem('guara-hf-v3', HF.on ? '1' : '0'); } catch (e) {}
+      HF.apply();
       if (!quiet) toast(HF.on ? 'Mãos livres: diga “Guará” e faça o pedido' : 'Mãos livres desligado');
+    },
+    apply: function () {
+      var active = HF.on && Voice.policyReady && !Voice.gameMode && !Voice.wakePending
+        && !Voice.speaking && Voice.mic === 'idle';
+      if (NATIVE && NATIVE.setHandsFree) NATIVE.setHandsFree(active);
+      var selected = HF.on && !Voice.gameMode;
+      $('hfbtn').className = 'ibtn subtle' + (selected ? ' on' : '') + (Voice.gameMode ? ' hidden' : '');
+      $('hfbtn').title = selected ? 'Mãos livres ligado — toque para desligar' : 'Manual — toque no microfone para falar';
+      $('amb-hf').className = 'hfpill' + (selected ? ' on' : '') + (Voice.gameMode ? ' hidden' : '');
+      $('amb-hf').lastChild.textContent = selected ? (active ? 'Ouvindo “Guará”' : 'Mãos livres · pausado') : 'Toque para falar';
       Ambient.update();
     },
+    // Só o tablet tem microfone: o painel aberto no navegador do PC não pode desligar o mãos livres dele.
+    // Reafirmado a cada 30 s para o servidor nunca ficar com um modo diferente do tablet.
+    report: function () {
+      if (NATIVE && NATIVE.setHandsFree) api('POST', '/api/voice/mode', { handsfree: HF.on }, null);
+    },
     toggle: function () {
+      if (Voice.gameMode) { toast('Modo jogo: converse por texto'); return; }
       if (!NATIVE || !NATIVE.setHandsFree) { toast('Atualize o app do tablet para usar o mãos livres'); return; }
       HF.set(!HF.on);
     }
@@ -845,6 +900,7 @@
       Guara.resize(6, 65, false, 40);   // 65x40 blocos de 6 px = 390x240
       $('ambient').className = 'hidden';
       Power.lastTouch = Power.panelTouch = Date.now();
+      if (S.permShown) renderPermission();
     },
     tray: function (on) {
       clearTimeout(Ambient.trayTimer);
@@ -866,6 +922,8 @@
       for (var i = 0; i < sessions.length && i < 6; i++) dots += '<i class="' + (MOOD_TAG[sessions[i].mood] || MOOD_TAG.idle)[1] + '"></i>';
       if (!S.connected) {
         dots = '<i class="err"></i>'; line = 'Procurando o PC…'; dim = true;
+      } else if (Voice.gameMode) {
+        line = 'Modo jogo · escreva para conversar com o Guará';
       } else if (Voice.mic === 'ouvindo') {
         dots = '<i class="listen"></i>'; line = 'Ouvindo você…';
       } else if (Voice.mic !== 'idle') {
@@ -959,11 +1017,31 @@
   // ------------------------------------------------------------ voz (ouvir e falar)
 
   var Voice = {
+    logoTalking: false, logoLevel: 0,
+    logo: function () {
+      if (!NATIVE || !NATIVE.setLogoState) return;
+      var state = 'idle';
+      if (S.connected && !Voice.gameMode) {
+        if (Voice.mic === 'ouvindo') state = 'listening';
+        else if (Voice.logoTalking) state = 'speaking';
+        else if (Voice.mic !== 'idle' || Voice.waiting || Voice.speaking) state = 'thinking';
+        else if (S.permShown) state = 'attention';
+        else if (ScreenOff.on || S.agent.mood === 'sleeping') state = 'sleep';
+      }
+      try { NATIVE.setLogoState(state, Voice.logoLevel); } catch (e) {}
+    },
+    // efeito curto na luz da logo: wake, notify, done ou error (app antigo sem o método: ignora)
+    logoEvent: function (name) {
+      if (NATIVE && NATIVE.logoEvent && !Voice.gameMode) { try { NATIVE.logoEvent(name); } catch (e) {} }
+    },
+    gameMode: false, policyReady: false, wakePending: false, inviteTimer: null, captureRequested: false,
+    followMode: false, followups: 0,
     mic: 'idle', audio: null, timer: null, bubbleUntil: 0, enabled: true, speaking: false, speaker: 'GUARÁ',
     clip: null, lastId: '', wait: null, waiting: null, thinkingIndex: 0,
     thinking: function (text, id) {
       if (id && S.mission && S.mission.id === id && S.mission.status !== 'running') return;
       Voice.waiting = { id: id || null, at: Date.now(), updated: Date.now() };
+      Voice.logo();
       Guara.setMood('thinking', 0);
       Voice.bubble(text || 'Deixa eu conferir isso pra você.', 'Preparando sua resposta…', 20000, 'PENSANDO…');
     },
@@ -977,7 +1055,63 @@
       Voice.bubbleUntil = Date.now() + (ms || 6000);
       Ambient.update();
     },
-    toggleMic: function () {
+    // O Guará perguntou algo: o microfone abre sozinho para a resposta. No máximo 3 vezes seguidas sem
+    // você tocar ou chamar "Guará", para eco e conversa de fundo não virarem um ciclo de perguntas.
+    followUp: function () {
+      if (!NATIVE || !NATIVE.listen || Voice.gameMode || !Voice.policyReady || S.permShown || ScreenOff.on) return;
+      if (Voice.followups >= 3) return;
+      Voice.followups++;
+      setTimeout(function () {   // espera o finzinho do som sair do alto-falante
+        if (Voice.mic !== 'idle' || Voice.clip || Voice.wakePending) return;
+        Voice.followMode = true;
+        Voice.captureRequested = true;
+        Voice.setMic('ouvindo');
+        api('POST', '/api/voice/warm', {}, null);
+        NATIVE.listen();
+      }, 350);
+    },
+    invite: function () {
+      if (!HF.on || Voice.gameMode || !Voice.policyReady || Voice.wakePending || Voice.mic !== 'idle') return;
+      ScreenOff.exit();
+      Power.wake();
+      Voice.followups = 0;
+      Voice.wakePending = true;
+      Voice.logoEvent('wake');
+      Voice.stop();
+      if (NATIVE && NATIVE.chime) {
+        // "plim" do próprio tablet e o microfone abre logo depois: o "Pode falar" falado vinha do PC (~2 s)
+        Voice.bubble('Pode falar, tô ouvindo…', 'Pauso sozinho quando você terminar.', 20000, 'GUARÁ');
+        NATIVE.chime();
+        Voice.inviteTimer = setTimeout(Voice.finishInvite, 320);   // depois do plim, para ele não ir na gravação
+        return;
+      }
+      Voice.bubble('Ouvi seu chamado.', 'Aguarde o “Pode falar” para fazer o pedido.', 20000, 'GUARÁ');
+      api('POST', '/api/voice/prompt', {}, function (code) {
+        if (code !== 200) Voice.finishInvite();
+      });
+      Voice.inviteTimer = setTimeout(Voice.finishInvite, 20000);
+    },
+    finishInvite: function () {
+      if (!Voice.wakePending) return;
+      Voice.wakePending = false;
+      clearTimeout(Voice.inviteTimer);
+      if (!HF.on || Voice.gameMode || Voice.mic !== 'idle') return;
+      Voice.toggleMic(true);
+    },
+    cancelCapture: function () {
+      Voice.captureRequested = false;
+      Voice.wakePending = false;
+      clearTimeout(Voice.inviteTimer);
+      if (NATIVE && NATIVE.cancelListen) NATIVE.cancelListen();
+      else if (NATIVE && NATIVE.stopListen) NATIVE.stopListen();
+      if (Voice.clip && Voice.clip.kind === 'listen_prompt') Voice.stop();
+      Voice.setMic('idle');
+    },
+    toggleMic: function (automatic) {
+      if (automatic && (!HF.on || !NATIVE || !NATIVE.listenAfterWake)) return;
+      if (!automatic) { Voice.followups = 0; Voice.followMode = false; }
+      if (Voice.wakePending) { Voice.wakePending = false; clearTimeout(Voice.inviteTimer); }
+      if (Voice.gameMode || !Voice.policyReady) { openCompose(true); return; }
       if (!NATIVE || !NATIVE.listen) {
         openCompose(true);
         toast('Sem microfone nativo: digite para falar com o Guará');
@@ -986,16 +1120,21 @@
       if (Voice.mic === 'ouvindo') { NATIVE.stopListen(); return; }
       if (Voice.mic !== 'idle') return;
       Voice.stop();
+      Voice.captureRequested = true;
       Voice.setMic('ouvindo');
       api('POST', '/api/voice/warm', {}, null);
-      NATIVE.listen();
+      if (automatic) NATIVE.listenAfterWake(); else NATIVE.listen();
     },
     setMic: function (st) {
+      if (Voice.gameMode) st = 'idle';
       Voice.mic = st;
+      if (st !== 'ouvindo' && !Voice.logoTalking) Voice.logoLevel = 0;   // o nível da sua voz não vaza para depois
+      Voice.logo();
       var cls = st === 'ouvindo' ? 'on' : (st === 'idle' ? '' : 'busy');
-      $('mic').className = cls;
-      $('amb-mic').className = cls;
+      $('mic').className = cls + (Voice.gameMode ? ' hidden' : '');
+      $('amb-mic').className = cls + (Voice.gameMode ? ' hidden' : '');
       Guara.setListening(st === 'ouvindo', 0);
+      HF.apply();
       if (st !== 'ouvindo') {
         $('micring').style.webkitTransform = $('micring').style.transform = 'scale(1)';
         $('amb-micring').style.webkitTransform = $('amb-micring').style.transform = 'scale(1)';
@@ -1007,6 +1146,10 @@
       else if (Voice.clip && NATIVE && NATIVE.stopAudio) NATIVE.stopAudio();
       Voice.audio = Voice.clip = null;
       Voice.speaking = false;
+      Voice.logoTalking = false;
+      Voice.logoLevel = 0;
+      Voice.logo();
+      HF.apply();
       clearInterval(Voice.timer);
       clearTimeout(Voice.wait);
       Guara.setTalk(0);
@@ -1015,25 +1158,43 @@
     // boca no ritmo da fala, contada a partir do momento em que o som começa de verdade
     lip: function (d) {
       var started = Date.now();
+      Voice.logoTalking = true;
       clearInterval(Voice.timer);
       Voice.timer = setInterval(function () {
         var t = (Voice.audio && Voice.audio.currentTime) || (Date.now() - started) / 1000;
         var i = Math.floor(t / 0.06);
-        if (i < d.env.length && t <= d.dur + 1) { Guara.setTalk(d.env[i]); return; }
+        if (i < d.env.length && t <= d.dur + 1) {
+          Voice.logoLevel = d.env[i];
+          Voice.logo();
+          Guara.setTalk(d.env[i]); return;
+        }
         if (Voice.audio) { Voice.stop(); return; }
         clearInterval(Voice.timer);   // no nativo, quem encerra a fala é o aviso 'ended' do Java
+        Voice.logoLevel = 0;
+        Voice.logo();
         Guara.setTalk(0);
       }, 60);
     },
+    textReply: function (d) {
+      if (d.kind === 'reply') Voice.waiting = null;
+      Voice.logo();
+      Power.wake();
+      Voice.bubble(d.text, Voice.gameMode ? 'Modo jogo · responda pelo botão Escrever' : '', 30000, 'GUARÁ');
+    },
     play: function (d) {
+      if (d.kind === 'listen_prompt' && !Voice.wakePending) return;
       if (d.kind === 'ack' && (!Voice.waiting || Voice.waiting.id !== d.mission_id ||
           (S.mission && S.mission.id === d.mission_id && S.mission.status !== 'running'))) return;
+      if (Voice.gameMode) { Voice.textReply(d); return; }
       if (d.kind === 'reply') Voice.waiting = null;
       Power.wake();
       if (Voice.mic === 'ouvindo' || d.id === Voice.lastId) return;   // a mesma fala pode chegar duas vezes
       Voice.lastId = d.id;
+      if (d.kind === 'notify') Voice.logoEvent('notify');
       Voice.stop();
       Voice.speaking = true;
+      Voice.logo();
+      HF.apply();
       Voice.clip = d;
       Voice.bubble(d.text, Ambient.on ? 'Toque no microfone para responder' : '', d.dur * 1000 + 5000, 'GUARÁ FALANDO');
       if (NATIVE && NATIVE.playWav) {
@@ -1045,19 +1206,23 @@
       }
       var audio = new Audio('/api/say/' + d.id + '.wav?t=' + TOKEN);
       Voice.audio = audio;
-      audio.onended = audio.onerror = function () { if (Voice.audio === audio) Voice.stop(); };
+      audio.onended = audio.onerror = function () {
+        if (Voice.audio === audio) { Voice.stop(); if (d.kind === 'listen_prompt') Voice.finishInvite(); else if (d.ask) Voice.followUp(); }
+      };
       try { audio.play(); } catch (e) {}
       Voice.lip(d);
     },
     heard: function (h) {
+      Voice.captureRequested = false;
       if (h.state === 'transcrevendo') Voice.bubble('Entendendo o que você falou…', '', 15000, 'TRANSCREVENDO…');
       else if (h.state === 'ok') { Voice.setMic('idle'); Voice.thinking(); }
       else if (h.state === 'vazio') Voice.setMic('idle');
-      else if (h.state === 'erro') { Voice.setMic('idle'); Voice.bubble('Não consegui entender o áudio.', h.text, 5000, 'GUARÁ'); }
+      else if (h.state === 'erro') { Voice.logoEvent('error'); Voice.setMic('idle'); Voice.bubble('Não consegui entender o áudio.', h.text, 5000, 'GUARÁ'); }
     }
   };
 
   setInterval(function () {
+    Voice.logo(); // heartbeat: o Java restaura a luz fixa se a página parar de responder
     var pending = Voice.waiting;
     if (!pending || Voice.speaking || Voice.mic !== 'idle' || !S.connected) return;
     if (Date.now() - pending.updated < 10000) return;
@@ -1070,20 +1235,35 @@
 
   window.CapiVoice = {
     state: function (st) {
-      if (st === 'ouvindo') { Voice.setMic('ouvindo'); Voice.bubble('Pode falar, tô ouvindo…', 'Pauso sozinho quando você terminar.', 32000, 'OUVINDO VOCÊ…'); }
+      if (!Voice.captureRequested) return; // ignora avisos de uma gravação já cancelada
+      if (Voice.gameMode) { Voice.setMic('idle'); return; }
+      var follow = Voice.followMode;
+      if (st !== 'ouvindo') Voice.followMode = false;
+      if (st === 'ouvindo') {
+        Voice.setMic('ouvindo');
+        if (follow) Voice.bubble('Pode responder, tô ouvindo…', 'Ou toque no microfone para cancelar.', 32000, 'OUVINDO VOCÊ…');
+        else Voice.bubble('Pode falar, tô ouvindo…', 'Pauso sozinho quando você terminar.', 32000, 'OUVINDO VOCÊ…');
+      }
       else if (st === 'enviando' || st === 'enviado') { Voice.setMic('enviando'); Voice.bubble('Entendendo o que você disse…', '', 15000, 'PROCESSANDO…'); }
-      else if (st === 'nada') { Voice.setMic('idle'); Voice.bubble('Não ouvi nada por aí.', 'Toque no microfone e fale comigo.', 4500, 'GUARÁ'); }
-      else if (st === 'erro') { Voice.setMic('idle'); Voice.bubble('O microfone do tablet falhou.', 'Toque de novo para tentar.', 4500, 'GUARÁ'); }
+      else if (st === 'nada') {
+        Voice.captureRequested = false; Voice.setMic('idle');
+        if (follow) Voice.bubble('Tudo bem, fico por aqui.', 'Toque no microfone quando quiser responder.', 4500, 'GUARÁ');
+        else Voice.bubble('Não ouvi nada por aí.', 'Toque no microfone e fale comigo.', 4500, 'GUARÁ');
+      }
+      else if (st === 'erro') { Voice.captureRequested = false; Voice.setMic('idle'); Voice.bubble('O microfone do tablet falhou.', 'Toque de novo para tentar.', 4500, 'GUARÁ'); }
     },
     // o player nativo avisa quando a fala começa e termina de tocar
     playState: function (st, id) {
       var d = Voice.clip;
       if (!d || d.id !== id) return;
       if (st === 'playing') { clearTimeout(Voice.wait); Voice.lip(d); }
-      else if (st === 'ended') Voice.stop();
+      else if (st === 'ended') { Voice.stop(); if (d.kind === 'listen_prompt') Voice.finishInvite(); else if (d.ask) Voice.followUp(); }
     },
     level: function (n) {
+      if (!Voice.captureRequested) return;
+      if (Voice.gameMode) return;
       Guara.setListening(Voice.mic === 'ouvindo', n);
+      if (Voice.mic === 'ouvindo') { Voice.logoLevel = n; Voice.logo(); }
       var s1 = 'scale(' + (1 + n * 0.045) + ')';
       $('micring').style.webkitTransform = $('micring').style.transform = s1;
       $('amb-micring').style.webkitTransform = $('amb-micring').style.transform = s1;
@@ -1092,12 +1272,27 @@
 
   function setVoiceEnabled(on) {
     Voice.enabled = on;
-    $('voicebtn').className = 'btn small' + (on ? '' : ' off');
+    $('voicebtn').className = 'btn small' + (on ? '' : ' off') + (Voice.gameMode ? ' hidden' : '');
     $('voicebtn').lastChild.textContent = on ? 'Avisos falados ligados' : 'Avisos falados desligados';
     setIcon($('voicebtn'), on ? 'vol' : 'volx', 15);
   }
 
   function onVoice(v) {
+    var was = Voice.gameMode, ready = Voice.policyReady;
+    Voice.gameMode = !!v.game_mode;
+    Voice.policyReady = true;
+    if (Voice.gameMode && (!ready || !was)) {
+      if (NATIVE && NATIVE.setHandsFree) NATIVE.setHandsFree(false);
+      if (NATIVE && NATIVE.stopListen) NATIVE.stopListen();
+      Voice.stop();
+      Voice.bubble('Jogo aberto: vamos conversar por texto.', 'A voz volta quando você fechar o jogo.', 10000, 'MODO JOGO');
+    } else if (ready && was && !Voice.gameMode) {
+      toast('Jogo fechado: a voz está disponível novamente');
+    }
+    HF.apply();
+    Voice.setMic(Voice.gameMode ? 'idle' : Voice.mic);
+    show($('game-mode'), Voice.gameMode);
+    show($('voices'), !Voice.gameMode);
     setVoiceEnabled(v.enabled);
     if (!v.list) return;
     var html = '';
@@ -1119,6 +1314,7 @@
     pct = Math.max(0, Math.min(100, pct));
     var ids = SLIDERS[kind];
     for (var i = 0; i < ids.length; i++) {
+      if (!$(ids[i])) continue;
       var rail = $(ids[i]).firstChild;
       rail.firstChild.style.width = '-webkit-calc(' + pct + '% + 13px)';
       rail.firstChild.style.width = 'calc(' + pct + '% + 13px)';
@@ -1174,9 +1370,9 @@
     S.composeConversational = !!conversational;
     $('compose-title').textContent = conversational ? 'Conversar com o Guará' : 'Pedir missão ao Guará';
     $('compose-meta').textContent = conversational
-      ? 'Ele responde em voz alta e lembra o contexto da conversa.'
+      ? (Voice.gameMode ? 'Modo jogo: ele responde por texto e lembra o contexto da conversa.' : 'Ele responde em voz alta e lembra o contexto da conversa.')
       : 'Ele usa a IA da vez no PC e mostra os passos na aba IA.';
-    $('compose-btn').textContent = conversational ? 'Falar' : 'Executar';
+    $('compose-btn').textContent = conversational ? 'Enviar' : 'Executar';
     show($('compose'), true);
     $('ask').value = '';
     setTimeout(function () { $('ask').focus(); }, 50);
@@ -1288,6 +1484,9 @@
     },
     'perm-allow': function () { decide('allow'); },
     'perm-deny': function () { decide('deny'); },
+    'perm-opt': function (el) { pickOption(el); },
+    'wa-send': function () { decideWa(true); },
+    'wa-cancel': function () { decideWa(false); },
     'perm-pick': function (el) { S.permSel = el.getAttribute('data-id'); S.permShown = null; renderPermission(); },
     sleep: function () { Power.sleep(); },
     mic: function () { Voice.toggleMic(); },
@@ -1309,14 +1508,56 @@
     });
   }
 
+  function shownPerm() {
+    var perms = S.agent.permissions || [];
+    for (var i = 0; i < perms.length; i++) if (perms[i].id === S.permShown) return perms[i];
+    return null;
+  }
+
+  function askHtml(p) {
+    var h = '';
+    for (var i = 0; i < p.questions.length; i++) {
+      var q = p.questions[i], sel = S.permAnswers[i] || [];
+      h += '<div class="askq">' + (q.header ? '<span class="tag">' + esc(q.header) + '</span>' : '') + esc(q.question) +
+        (q.multiSelect ? ' <span class="meta">(pode marcar várias)</span>' : '') + '</div>';
+      for (var j = 0; j < q.options.length; j++) {
+        var o = q.options[j];
+        h += '<div class="askopt' + (sel.indexOf(o.label) >= 0 ? ' sel' : '') + '" data-act="perm-opt" data-q="' + i + '" data-o="' + j + '">' +
+          '<b>' + esc(o.label) + '</b>' + (o.description ? '<span>' + esc(o.description) + '</span>' : '') + '</div>';
+      }
+    }
+    return h;
+  }
+
+  function pickOption(el) {
+    var p = shownPerm();
+    if (!p || !p.questions) return;
+    var qi = +el.getAttribute('data-q'), q = p.questions[qi], o = q && q.options[+el.getAttribute('data-o')];
+    if (!o) return;
+    var sel = S.permAnswers[qi] || [];
+    if (q.multiSelect) { var k = sel.indexOf(o.label); if (k >= 0) sel.splice(k, 1); else sel.push(o.label); }
+    else sel = [o.label];
+    S.permAnswers[qi] = sel;
+    if (p.questions.length === 1 && !q.multiSelect) { decide('allow'); return; }
+    renderPermission();
+  }
+
   function decide(behavior) {
-    var p = null, perms = S.agent.permissions || [];
-    for (var i = 0; i < perms.length; i++) if (perms[i].id === S.permShown) p = perms[i];
+    var p = shownPerm();
     if (!p) return;
+    var body = { id: p.id, behavior: behavior };
+    if (behavior === 'allow' && p.questions && p.questions.length) {
+      body.answers = {};
+      for (var i = 0; i < p.questions.length; i++) {
+        var sel = S.permAnswers[i] || [];
+        if (!sel.length) { toast('Escolha uma opção em cada pergunta'); return; }
+        body.answers[p.questions[i].question] = sel;
+      }
+    }
     S.permShown = null;
     S.permSel = null;
-    api('POST', '/api/permission', { id: p.id, behavior: behavior }, null);
-    toast(behavior === 'allow' ? 'Aprovado' : 'Negado');
+    api('POST', '/api/permission', body, null);
+    toast(behavior === 'allow' ? (body.answers ? 'Resposta enviada' : 'Aprovado') : (body.answers ? 'Recusado' : 'Negado'));
   }
 
   function media(el) {
@@ -1343,9 +1584,12 @@
   }
 
   function insideCompose(node) {
-    if ($('compose').className.indexOf('hidden') >= 0) return false;
+    var cOpen = $('compose').className.indexOf('hidden') < 0;
+    var wOpen = $('wa-confirm') && $('wa-confirm').className.indexOf('hidden') < 0;
+    var pOpen = $('perm').className.indexOf('hidden') < 0;
+    if (!cOpen && !wOpen && !pOpen) return false;
     while (node && node !== document) {
-      if (node.id === 'compose') return true;
+      if ((cOpen && node.id === 'compose') || (wOpen && node.id === 'wa-confirm') || (pOpen && node.id === 'perm')) return true;
       node = node.parentNode;
     }
     return false;
@@ -1498,8 +1742,8 @@
     var meses = ['jan', 'fev', 'mar', 'abr', 'mai', 'jun', 'jul', 'ago', 'set', 'out', 'nov', 'dez'];
     var bat = tabletBattery();
     $('date').textContent = dias[d.getDay()] + ', ' + d.getDate() + ' ' + meses[d.getMonth()];
-    show($('tbat'), !!bat);
-    if (bat) {
+    if ($('tbat')) show($('tbat'), !!bat);
+    if (bat && $('tbat')) {
       $('tbat').className = bat.charging ? 'charging' : bat.pct <= 20 ? 'low' : '';
       $('tbatfill').style.width = Math.max(4, bat.pct) + '%';
       $('tbatpct').textContent = bat.pct + '%';
@@ -1512,7 +1756,11 @@
   setTimeout(function () { paintSlider('bright', 100); }, 0);
   tickClock();
   setInterval(tickClock, 10000);
-  try { if (localStorage.getItem('guara-hf') === '1' && NATIVE && NATIVE.setHandsFree) HF.set(true, true); } catch (e) {}
+  // Só a preferência nova, escolhida após corrigir os disparos, pode reativar a escuta.
+  var savedHF = false;
+  try { savedHF = localStorage.getItem('guara-hf-v3') === '1'; } catch (e) {}
+  HF.set(savedHF, true);
+  setInterval(HF.report, 30000);
   if (NATIVE && NATIVE.setBrightness) NATIVE.setBrightness(1);
   var qTab = (location.search.match(/[?&]tab=([a-z]+)/) || [])[1];
   if (qTab && document.querySelector('[data-tab="' + qTab + '"]')) ACT.tab(document.querySelector('[data-tab="' + qTab + '"]'));

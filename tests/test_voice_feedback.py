@@ -18,6 +18,7 @@ class FeedbackTests(unittest.TestCase):
         voice.agent = SimpleNamespace(mission=mission)
         voice.hub = Mock()
         voice.enabled = True
+        voice.game_mode = False
         voice.voice_id = 'demo'
         voice._ack_cache = {}
         voice._ack_lock = threading.Lock()

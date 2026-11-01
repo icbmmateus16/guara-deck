@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Guará — servidor do painel do tablet.
+"""Capi — servidor do painel do tablet.
 
 Serve a interface (web/), manda o estado em tempo real por SSE, executa as ações
 no PC e recebe os hooks do Claude Code. O tablet só desenha e envia toques.
@@ -21,14 +21,12 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
-import psutil
-
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import pc  # noqa: E402
-import weather  # noqa: E402
 from agent import Agent  # noqa: E402
 from voice import Voice  # noqa: E402
+from discovery import announce  # noqa: E402
 
 ROOT = Path(__file__).resolve().parent.parent
 WEB = ROOT / "web"
@@ -51,7 +49,9 @@ DEFAULT_CONFIG = {
     "engines": ["codex", "agy", "claude"],  # GPT primeiro; o limite do Claude fica para programar
     "voice_enabled": True,
     "voice_model": "sonnet",
-    "voice_session_minutes": 10,
+    "voice_session_minutes": 30,
+    "whatsapp_aliases": {},
+    "whatsapp_vip": ["Amor"],
     # Voz em modo execução: o Guará age no PC (abre apps, edita arquivos, roda comandos) com os limites do prompt
     "voice_exec": True,
     "voice_exec_tools": ["Read", "Glob", "Grep", "WebSearch", "WebFetch", "Edit", "Write", "Bash"],
@@ -88,18 +88,14 @@ DEFAULT_CONFIG = {
          "tools": ["Bash(ls:*)", "Bash(du:*)", "Bash(find:*)", "Glob"]},
     ],
     "shortcuts": [
-        {"id": "firefox", "color": "#ff9f0a", "label": "Firefox", "icon": "web", "kind": "app", "target": "firefox_firefox"},
-        {"id": "code", "color": "#7cc4ff", "label": "VS Code", "icon": "code", "kind": "app", "target": "code_code"},
         {"id": "terminal", "color": "#5eead4", "label": "Terminal", "icon": "term", "kind": "app", "target": "org.gnome.Ptyxis"},
+        {"id": "code", "color": "#7cc4ff", "label": "VS Code", "icon": "code", "kind": "app", "target": "code_code"},
+        {"id": "firefox", "color": "#ffd166", "label": "Firefox", "icon": "web", "kind": "app", "target": "firefox_firefox"},
         {"id": "files", "color": "#ffb35c", "label": "Arquivos", "icon": "folder", "kind": "app", "target": "org.gnome.Nautilus"},
-        {"id": "projetos", "color": "#ff9a3c", "label": "Projetos", "icon": "folder", "kind": "open", "target": "~/Área de trabalho/PROJETOS",
-         "theme_icon": "folder-blue-development"},
+        {"id": "projetos", "color": "#ff9a3c", "label": "Projetos", "icon": "folder", "kind": "open", "target": "~/Área de trabalho/PROJETOS"},
         {"id": "discord", "color": "#a78bfa", "label": "Discord", "icon": "chat", "kind": "app", "target": "discord"},
         {"id": "obs", "color": "#ff6b6b", "label": "OBS", "icon": "rec", "kind": "app", "target": "com.obsproject.Studio"},
         {"id": "obsidian", "color": "#c4a5ff", "label": "Obsidian", "icon": "note", "kind": "app", "target": "obsidian"},
-        {"id": "teamviewer", "color": "#0a84ff", "label": "TeamViewer", "icon": "monitor", "kind": "app", "target": "com.teamviewer.TeamViewer"},
-        {"id": "texteditor", "color": "#98989f", "label": "Editor de texto", "icon": "note", "kind": "app", "target": "org.gnome.TextEditor"},
-        {"id": "calc", "color": "#30d158", "label": "Planilhas", "icon": "grid", "kind": "app", "target": "libreoffice-calc"},
         {"id": "print", "color": "#7cc4ff", "label": "Print", "icon": "camera", "kind": "screenshot"},
         {"id": "settings", "color": "#9aa0b5", "label": "Ajustes", "icon": "gear", "kind": "app", "target": "org.gnome.Settings"},
         {"id": "lock", "color": "#ff6b8b", "label": "Bloquear", "icon": "lock", "kind": "lock"},
@@ -172,11 +168,12 @@ HUB = Hub()
 AGENT = Agent(HUB, CFG)
 VOICE = AGENT.voice = Voice(HUB, AGENT, CFG)
 STATS = pc.Stats()
-STATE = {"stats": {}, "media": {}, "volume": {}, "toggles": {}, "pcctl": {}, "sky": weather.cached()}
+STATE = {"stats": {}, "media": {}, "volume": {}, "toggles": {}, "pcctl": {}}
 
 
 def shortcuts_view():
-    return [{"id": s["id"], "label": s["label"], "icon": s.get("icon", ""), "color": s.get("color", ""), "img": pc.shortcut_img(s)}
+    return [{"id": s["id"], "label": s["label"], "icon": s.get("icon", ""), "color": s.get("color", ""),
+             "img": pc.shortcut_img(s)}
             for s in CFG["shortcuts"] if pc.shortcut_available(s)]
 
 
@@ -205,13 +202,13 @@ def full_state():
         "missions": missions_view(),
         "mission": AGENT.mission_view(),
         "voice": {"enabled": VOICE.enabled, **VOICE.voices()},
+        "wa_pending": VOICE.wa_pending,
         "activity": list(AGENT.activity),
         "toggles": STATE["toggles"],
         "pcctl": STATE["pcctl"],
         "quota": AGENT.quota_view(),
         "name": CFG.get("assistant_name", "Guará"),
-        "guara_style": "soft" if CFG.get("guara_style") == "soft" else "pixel",
-        "sky": STATE["sky"],
+        "guara_style": CFG.get("guara_style", "real"),
         "ui_ver": ui_ver(),
         "server_time": int(time.time()),
     }
@@ -258,26 +255,6 @@ def handoff(session_id):
               "Antes de mudar algo, rode git status e git diff para ver o que já foi feito.")
     pc._terminal(s["cwd"], "codex " + shlex.quote(prompt))
     return {"ok": True}
-
-
-ADB = Path.home() / "Android" / "Sdk" / "platform-tools" / "adb"
-
-
-def tablet_backlight(ip, on):
-    """Apaga a luz de fundo do tablet (o botão físico está ruim). Só a luz: o toque continua
-    funcionando, e o próprio Android reacende quando o painel volta o brilho."""
-    if on or not ADB.exists():
-        return
-    serial = f"{ip}:5555"
-    def adb(*args):
-        return subprocess.run([str(ADB), "-s", serial, *args], capture_output=True, text=True, timeout=15).stdout.strip()
-    try:
-        subprocess.run([str(ADB), "connect", serial], capture_output=True, timeout=10)
-        if adb("shell", "getprop", "ro.board.platform") != "wmt":
-            return   # restringe o comando à plataforma do tablet compatível
-        adb("shell", "su -c 'for b in /sys/class/backlight/*/brightness; do echo 0 > $b; done'")
-    except Exception as e:
-        sys.stderr.write(f"backlight: {e}\n")
 
 
 def start_mission(body):
@@ -355,7 +332,7 @@ def guara_interact(kind):
 
 class Handler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.0"
-    server_version = "Guara/1"
+    server_version = "Capi/1"
 
     def log_message(self, fmt, *args):
         if "/events" not in self.path and "/api/ping" not in self.path:
@@ -432,17 +409,15 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(403, {"error": "token"})
             if path == "/api/state":
                 return self._send(200, full_state())
-            if path == "/api/dev":
-                return self._send(200, {"projects": pc.projects(), "docker": pc.docker_containers(),
-                                        "ports": pc.listening_ports(), "ollama": pc.ollama_loaded()})
             if path == "/api/apps":
                 return self._send(200, {"apps": pc.apps_catalog(CFG["shortcuts"])})
             if path.startswith("/api/appicon/"):
                 key = path.rsplit("/", 1)[-1][:-4] if path.endswith(".png") else ""
-                data = pc.app_icon(key) if key and all(c.isalnum() or c in "._-" for c in key) else None
-                if not data:
-                    return self._send(404, {"error": "sem ícone"})
-                return self._send(200, data, "image/png", {"Cache-Control": "max-age=604800"})
+                data = pc.app_icon(key) if key and re.fullmatch(r"[\w.-]+", key) else None
+                return self._send(200, data, "image/png") if data else self._send(404, {"error": "sem ícone"})
+            if path == "/api/dev":
+                return self._send(200, {"projects": pc.projects(), "docker": pc.docker_containers(),
+                                        "ports": pc.listening_ports(), "ollama": pc.ollama_loaded()})
             if path == "/api/ping":
                 return self._send(200, {"ok": True, "t": int(time.time())})
             if path.startswith("/api/say/"):
@@ -507,8 +482,6 @@ class Handler(BaseHTTPRequestHandler):
 
     def _static(self, path):
         rel = "index.html" if path in ("", "/") else path.lstrip("/")
-        if rel == "guara.js":   # personagem conforme o estilo escolhido: pixel art (padrão) ou 3D suave
-            rel = "guara-soft.js" if CFG.get("guara_style") == "soft" else "guara-pixel.js"
         f = (WEB / rel).resolve()
         if WEB.resolve() not in f.parents or not f.is_file():
             return self._send(404, {"error": "não existe"})
@@ -569,7 +542,8 @@ class Handler(BaseHTTPRequestHandler):
             n = int(self.headers.get("Content-Length") or 0)
             if not 1000 < n < 4_000_000:
                 return self._send(400, {"error": "áudio inválido"})
-            VOICE.hear(self.rfile.read(n), wake="wake=1" in self.path)
+            wake = (self._query().get('wake') or ['0'])[0] == '1'
+            VOICE.hear(self.rfile.read(n), wake=wake)
             return self._send(200, {"ok": True})
         body = self._body()
         try:
@@ -582,14 +556,14 @@ class Handler(BaseHTTPRequestHandler):
                     HUB.broadcast("media" if "player" in result else "volume", result)
                 return self._send(200, {"ok": True, "result": result})
             if path == "/api/app":
-                ok, err = pc.launch_app(str(body.get("id", "")))
-                return self._send(200 if ok else 400, {"ok": ok, "error": err})
+                ok, error = pc.launch_app(str(body.get("id", "")))
+                return self._send(200 if ok else 400, {"ok": ok, "error": error})
             if path == "/api/volume":
                 STATE["volume"] = pc.volume_set(body.get("level", 50))
                 HUB.broadcast("volume", STATE["volume"])
                 return self._send(200, {"ok": True})
             if path == "/api/permission":
-                ok = AGENT.permission_decide(body.get("id"), body.get("behavior"))
+                ok = AGENT.permission_decide(body.get("id"), body.get("behavior"), body.get("answers"))
                 return self._send(200 if ok else 404, {"ok": ok})
             if path == "/api/mission":
                 ok, info = start_mission(body)
@@ -614,9 +588,6 @@ class Handler(BaseHTTPRequestHandler):
                 STATE["pcctl"] = pc.pc_set(body.get("what", ""), body.get("value"))
                 HUB.broadcast("pcctl", STATE["pcctl"])
                 return self._send(200, {"ok": True, "pcctl": STATE["pcctl"]})
-            if path == "/api/tablet/backlight":
-                threading.Thread(target=tablet_backlight, args=(self.client_address[0], bool(body.get("on"))), daemon=True).start()
-                return self._send(200, {"ok": True})
             if path == "/api/quota/refresh":
                 threading.Thread(target=AGENT.refresh_quota, kwargs={"probe": True}, daemon=True).start()
                 return self._send(200, {"ok": True})
@@ -627,6 +598,15 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(200, handoff(body.get("session", "")))
             if path == "/api/voice/warm":
                 VOICE.warm()
+                return self._send(200, {"ok": True})
+            if path == "/api/voice/cancel":
+                VOICE.cancel_listening()
+                return self._send(200, {"ok": True})
+            if path == "/api/voice/mode":
+                VOICE.set_handsfree_mode(body.get('handsfree') is True)
+                return self._send(200, {"ok": True, "handsfree": VOICE.handsfree_enabled})
+            if path == "/api/voice/prompt":
+                threading.Thread(target=VOICE.prompt_to_listen, daemon=True).start()
                 return self._send(200, {"ok": True})
             if path == "/api/voice/set":
                 VOICE.set_voice(body.get("id", ""))
@@ -649,6 +629,9 @@ class Handler(BaseHTTPRequestHandler):
                 AGENT.log("voice", f"Você: {text}")
                 ok, info = VOICE.converse(text)
                 return self._send(200 if ok else 409, {"ok": ok, "info": info})
+            if path == "/api/whatsapp/confirm":
+                ok = VOICE.wa_decide(bool(body.get("send")), body.get("text"))
+                return self._send(200 if ok else 404, {"ok": ok})
             if path == "/api/guara/interact":
                 res = guara_interact(str(body.get("kind") or "poke"))
                 return self._send(200 if res.get("ok", True) else 409, res)
@@ -669,23 +652,11 @@ class Handler(BaseHTTPRequestHandler):
                 HUB.broadcast("media", STATE["media"])
                 return self._send(200, {"ok": True, "media": STATE["media"]})
             if path == "/api/style":
-                st = "soft" if body.get("style") == "soft" else "pixel"
+                st = "pixel" if body.get("style") == "pixel" else "real"
                 CFG["guara_style"] = st
                 save_user_config("guara_style", st)
                 HUB.broadcast("style", {"style": st})
                 return self._send(200, {"ok": True, "style": st})
-            if path == "/api/sky":
-                # Prévia do céu: {"hora": "18:10", "rain": 2, "cloud": 80, "storm": true}; corpo vazio volta ao real.
-                sky = dict(STATE["sky"] or {})
-                if body:
-                    sky.update({k: body[k] for k in ("rain", "cloud", "storm", "overcast", "fog") if k in body})
-                    if "cloud" in body and "overcast" not in body:
-                        sky["overcast"] = body["cloud"] >= 85
-                    if body.get("hora"):
-                        h, _, m = str(body["hora"]).partition(":")
-                        sky["force"] = int(h) * 60 + int(m or 0)
-                HUB.broadcast("sky", sky)
-                return self._send(200, {"ok": True, "sky": sky})
             if path == "/api/mission/cancel":
                 return self._send(200, {"ok": AGENT.mission_cancel()})
         except Exception as e:
@@ -702,7 +673,8 @@ def loop_stats():
             AGENT.pc_idle_ms = pc.pc_idle_ms() or 0
             if HUB.clients:
                 HUB.broadcast("stats", STATE["stats"])
-                HUB.broadcast("pc", {"idle_ms": AGENT.pc_idle_ms})
+                # o painel só usa a ociosidade para apagar a tela (limiares de minutos): de 10 em 10 s e só se mudou
+                HUB.broadcast("pc", {"idle_ms": AGENT.pc_idle_ms // 10000 * 10000}, only_if_changed=True)
             AGENT.tick()
         except Exception as e:
             sys.stderr.write(f"stats: {e}\n")
@@ -734,60 +706,13 @@ def loop_toggles():
         time.sleep(6 if HUB.clients else 30)
 
 
-def loop_weather():
-    """Tempo lá fora a cada 15 min, para o cenário do Guará acompanhar o dia, as nuvens e a chuva."""
-    while True:
-        try:
-            STATE["sky"] = weather.fetch(CFG)
-            HUB.broadcast("sky", STATE["sky"], only_if_changed=True)
-        except Exception as e:
-            sys.stderr.write(f"tempo: {e}\n")
-        time.sleep(900)
-
-
-OPEN_BOX = Path.home() / ".cache" / "guara" / "abrir"
-
-
-def loop_open_box():
-    """Ponte estreita para a voz: a IA, dentro da sandbox, escreve aqui um site (https) ou um app da dock e o
-    painel abre na sessão do usuário. Qualquer outra coisa é ignorada; nada de comando livre."""
-    OPEN_BOX.parent.mkdir(parents=True, exist_ok=True)
-    while True:
-        try:
-            if OPEN_BOX.exists():
-                lines = OPEN_BOX.read_text(errors="ignore").splitlines()
-                OPEN_BOX.unlink()
-                for item in lines[:3]:
-                    pc.open_target(item, CFG["shortcuts"])
-        except Exception as e:
-            sys.stderr.write(f"abrir: {e}\n")
-        time.sleep(0.5)
-
-
-def broadcast_addrs():
-    """Endereço de broadcast de cada rede do PC (Wi-Fi, cabo…), menos as internas."""
-    out = []
-    for name, addrs in psutil.net_if_addrs().items():
-        if name == "lo" or name.startswith(("docker", "br-", "veth", "lxc", "tailscale", "virbr")):
-            continue
-        for a in addrs:
-            if a.family == socket.AF_INET and a.broadcast:
-                out.append(a.broadcast)
-    return out or ["255.255.255.255"]
-
-
 def loop_beacon():
-    """Anuncia o PC em todas as redes dele: o tablet acha o servidor mesmo se o IP mudar.
-    (255.255.255.255 sai só pela rota principal; com Wi-Fi e cabo juntos, o Wi-Fi ficava de fora.)"""
+    """Anuncia o PC na rede: o tablet acha o servidor mesmo se o IP mudar."""
     s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     s.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
     msg = f"CAPI1 {CFG['port']}".encode()
     while True:
-        for addr in broadcast_addrs():
-            try:
-                s.sendto(msg, (addr, CFG["discovery_port"]))
-            except OSError:
-                pass
+        announce(s, msg, CFG["discovery_port"])
         time.sleep(3)
 
 
@@ -803,11 +728,11 @@ def lan_ip():
 
 
 def main():
-    for fn in (loop_stats, loop_media, loop_toggles, loop_beacon, loop_weather, loop_open_box):
+    for fn in (loop_stats, loop_media, loop_toggles, loop_beacon):
         threading.Thread(target=fn, daemon=True).start()
     srv = ThreadingHTTPServer(("0.0.0.0", CFG["port"]), Handler)
     srv.daemon_threads = True
-    print(f"Guará no ar: http://{lan_ip()}:{CFG['port']}/?t={CFG['token']}", flush=True)
+    print(f"Capi no ar: http://{lan_ip()}:{CFG['port']}/?t={CFG['token']}", flush=True)
     srv.serve_forever()
 
 
